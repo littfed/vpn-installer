@@ -272,12 +272,14 @@ class TestSubscriptionEndpoint:
             assert len(tun_inbounds) > 0, "Must configure TUN inbound"
             assert tun_inbounds[0].get("address") == ["172.19.0.1/30"], "TUN inbound must configure modern address array"
             assert "dns" in singbox_cfg
-            # Split DNS: Yandex DoH for RU
+            # Split DNS: Yandex DNS for RU
             dns_servers = singbox_cfg["dns"]["servers"]
-            assert any(s.get("server") == "77.88.8.8" and s.get("type") == "https" for s in dns_servers), "Split DNS must include Yandex DoH (77.88.8.8)"
+            assert any(s.get("server") == "77.88.8.8" and s.get("type") in ("udp", "https") for s in dns_servers), "Split DNS must include Yandex DNS (77.88.8.8)"
             assert any(s.get("server") == "1.1.1.1" and s.get("type") == "https" for s in dns_servers), "Split DNS must include remote DoH (1.1.1.1)"
             direct_dns = [s for s in dns_servers if s.get("tag") == "dns-direct"][0]
             assert "detour" not in direct_dns, "dns-direct must not specify redundant detour to empty direct outbound"
+            assert tun_inbounds[0].get("strict_route") is False, "TUN must use strict_route: false to prevent Windows WFP socket deadlocks"
+            assert any(ib.get("type") == "mixed" for ib in singbox_cfg["inbounds"]), "Must provide mixed inbound for system proxy"
             assert singbox_cfg.get("route", {}).get("default_domain_resolver") == "dns-direct"
             geosite_ru = [rs for rs in singbox_cfg.get("route", {}).get("rule_set", []) if rs.get("tag") == "geosite-ru"][0]
             assert "category-ru.srs" in geosite_ru.get("url", ""), "geosite-ru must use valid category-ru.srs rule-set URL"

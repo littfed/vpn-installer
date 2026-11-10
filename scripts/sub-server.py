@@ -147,9 +147,8 @@ def build_singbox_json(manifest, user):
                 },
                 {
                     "tag": "dns-direct",
-                    "type": "https",
-                    "server": "77.88.8.8",
-                    "path": "/dns-query"
+                    "type": "udp",
+                    "server": "77.88.8.8"
                 }
             ],
             "rules": [
@@ -160,10 +159,6 @@ def build_singbox_json(manifest, user):
                 {
                     "rule_set": "geosite-ru",
                     "server": "dns-direct"
-                },
-                {
-                    "rule_set": "geosite-openai",
-                    "server": "dns-remote"
                 }
             ],
             "final": "dns-remote",
@@ -179,8 +174,13 @@ def build_singbox_json(manifest, user):
                     "172.19.0.1/30"
                 ],
                 "auto_route": True,
-                "strict_route": True,
-                "stack": "system"
+                "strict_route": False
+            },
+            {
+                "type": "mixed",
+                "tag": "mixed-in",
+                "listen": "127.0.0.1",
+                "listen_port": 20808
             }
         ],
         "outbounds": [
@@ -253,13 +253,6 @@ def build_singbox_json(manifest, user):
                     "format": "binary",
                     "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/ru.srs",
                     "download_detour": "direct"
-                },
-                {
-                    "tag": "geosite-openai",
-                    "type": "remote",
-                    "format": "binary",
-                    "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/openai.srs",
-                    "download_detour": "vless-proxy"
                 }
             ],
             "rules": [
