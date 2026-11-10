@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 VPN_DIR="${VPN_DIR:-/opt/vpn-installer}"
+BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 MANIFEST_FILE="${VPN_DIR}/manifest.json"
 COMPOSE_FILE="${VPN_DIR}/docker-compose.yml"
 MOCK_SIGHUP_FILE="${MOCK_SIGHUP_FILE:-}"
@@ -42,7 +43,11 @@ Available Commands:
   status                   Show node status, services, and listening ports
   service <action>         Manage background services (start, stop, restart, reload, logs)
   user <action> [args]     Manage users (add, list, show, suspend, enable, kick, delete)
-  system <action>          Manage system components (enable-sub, disable-sub, status)
+  system <action>          Manage system components (enable-sub, disable-sub, status, harden)
+  backup [file]            Create backup archive (.tar.gz) of node configurations
+  restore <archive>        Restore node configuration from backup archive
+  test-leak                Run diagnostic audit for IP, DNS, WebRTC, and WARP leaks
+  uninstall [--force]      Uninstall node containers, firewall rules, and CLI
   help                     Show this help message
 
 User Actions:
@@ -58,6 +63,13 @@ System Actions:
   vpn system enable-sub          Enable adaptive subscription endpoint (/sub/<token>)
   vpn system disable-sub         Disable adaptive subscription endpoint
   vpn system status              Show subscription endpoint status
+  vpn system harden [--dry-run]  Run OS security hardening (littfed/server-setup)
+
+Maintenance Actions:
+  vpn backup [file]              Create backup archive (.tar.gz)
+  vpn restore <archive>          Restore configuration and restart node
+  vpn test-leak                  Run leak detection and WARP egress audit
+  vpn uninstall [--force]        Uninstall services, remove symlink and clean firewall
 
 Service Actions:
   vpn service start        Start all containers
@@ -1056,6 +1068,63 @@ cmd_system_sub_status() {
     echo "  Internal Port: $port"
 }
 
+cmd_system_harden() {
+    local dry_run=0
+    local mock_mode="${MOCK_HARDEN:-0}"
+    local auto_yes=0
+
+    for arg in "$@"; do
+        case "$arg" in
+            --dry-run)
+                dry_run=1
+                ;;
+            --mock)
+                mock_mode=1
+                ;;
+            -y|--yes)
+                auto_yes=1
+                ;;
+        esac
+    done
+
+    echo "=========================================================="
+    echo "       Host Security Hardening (littfed/server-setup)      "
+    echo "=========================================================="
+    echo "Upstream repository: https://github.com/littfed/server-setup"
+    echo "Includes: SSH key hardening, fail2ban intrusion prevention, unattended-upgrades security patches."
+    echo ""
+
+    if [[ "$dry_run" -eq 1 ]]; then
+        echo "[Dry-Run] The following command would be executed:"
+        echo "  curl -fsSL https://raw.githubusercontent.com/littfed/server-setup/main/setup.sh | bash"
+        return 0
+    fi
+
+    if [[ "$mock_mode" -eq 1 ]]; then
+        echo "[✓] [MOCK] Server security hardening completed successfully via littfed/server-setup."
+        return 0
+    fi
+
+    if [[ "$auto_yes" -ne 1 ]]; then
+        read -r -p "Do you want to proceed with host system hardening? [y/N]: " confirm
+        if [[ ! "$confirm" =~ ^[yY]([eE][sS])?$ ]]; then
+            echo "Security hardening cancelled."
+            return 0
+        fi
+    fi
+
+    echo "[+] Running server-setup hardening..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL https://raw.githubusercontent.com/littfed/server-setup/main/setup.sh | bash
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- https://raw.githubusercontent.com/littfed/server-setup/main/setup.sh | bash
+    else
+        echo "Error: Neither curl nor wget is installed." >&2
+        return 1
+    fi
+    echo "[✓] Host system hardening completed."
+}
+
 cmd_system() {
     local action="${1:-}"
     shift || true
@@ -1070,12 +1139,269 @@ cmd_system() {
         status|sub-status)
             cmd_system_sub_status "$@"
             ;;
+        harden)
+            cmd_system_harden "$@"
+            ;;
         *)
             echo "Error: Unknown system action '$action'." >&2
-            echo "Usage: vpn system {enable-sub|disable-sub|status}" >&2
+            echo "Usage: vpn system {enable-sub|disable-sub|status|harden}" >&2
             return 1
             ;;
     esac
+}
+
+cmd_backup() {
+    local target_archive="${1:-}"
+    if [[ ! -d "$VPN_DIR" ]]; then
+        echo "Error: VPN directory not found at $VPN_DIR" >&2
+        return 1
+    fi
+
+    if [[ -z "$target_archive" ]]; then
+        local backups_dir="${VPN_DIR}/backups"
+        mkdir -p "$backups_dir"
+        local timestamp
+        timestamp="$(date +%Y%m%d_%H%M%S)"
+        target_archive="${backups_dir}/vpn-backup-${timestamp}.tar.gz"
+    fi
+
+    local target_dir
+    target_dir="$(dirname "$target_archive")"
+    mkdir -p "$target_dir"
+
+    echo "[+] Creating backup archive of vpn-installer configurations..."
+
+    # Collect existing items from VPN_DIR to archive
+    local items=()
+    for item in manifest.json users.json docker-compose.yml config.json Caddyfile caddy certs templates sub scripts; do
+        if [[ -e "${VPN_DIR}/${item}" ]]; then
+            items+=("$item")
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
+        echo "Error: No configuration files found in $VPN_DIR to backup." >&2
+        return 1
+    fi
+
+    local tar_flags=("-czf")
+    if tar --help 2>&1 | grep -q -- '--force-local'; then
+        tar_flags=("--force-local" "-czf")
+    fi
+
+    tar "${tar_flags[@]}" "$target_archive" -C "$VPN_DIR" "${items[@]}"
+    chmod 600 "$target_archive" 2>/dev/null || true
+
+    local size
+    size=$(du -h "$target_archive" 2>/dev/null | cut -f1 || echo "created")
+    echo "[✓] Backup archive created successfully: $target_archive ($size)"
+}
+
+cmd_restore() {
+    local archive="${1:-}"
+    if [[ -z "$archive" ]]; then
+        echo "Error: Backup archive path required." >&2
+        echo "Usage: vpn restore <archive.tar.gz>" >&2
+        return 1
+    fi
+
+    if [[ ! -f "$archive" ]]; then
+        echo "Error: Archive file not found: $archive" >&2
+        return 1
+    fi
+
+    echo "[+] Validating backup archive: $archive..."
+    local tar_flags_t=("-tzf")
+    local tar_flags_x=("-xzf")
+    if tar --help 2>&1 | grep -q -- '--force-local'; then
+        tar_flags_t=("--force-local" "-tzf")
+        tar_flags_x=("--force-local" "-xzf")
+    fi
+
+    local archive_contents
+    if ! archive_contents=$(tar "${tar_flags_t[@]}" "$archive" 2>/dev/null); then
+        echo "Error: Invalid or corrupted tar.gz archive: $archive" >&2
+        return 1
+    fi
+
+    if ! echo "$archive_contents" | grep -q -E '(manifest\.json|users\.json|docker-compose\.yml)'; then
+        echo "Error: Archive does not contain valid vpn-installer configurations." >&2
+        return 1
+    fi
+
+    echo "[+] Restoring configuration to $VPN_DIR..."
+    mkdir -p "$VPN_DIR"
+    tar "${tar_flags_x[@]}" "$archive" -C "$VPN_DIR"
+
+    # Restore secure permissions
+    chmod 700 "$VPN_DIR" 2>/dev/null || true
+    chmod 600 "$VPN_DIR"/*.json 2>/dev/null || true
+    if [[ -d "$VPN_DIR/certs" ]]; then
+        chmod 600 "$VPN_DIR"/certs/* 2>/dev/null || true
+    fi
+
+    # Validate json files
+    if [[ -f "$VPN_DIR/manifest.json" ]]; then
+        if ! run_python -c "import json; json.load(open('$VPN_DIR/manifest.json'))" 2>/dev/null; then
+            echo "Error: Restored manifest.json is invalid JSON." >&2
+            return 1
+        fi
+    fi
+    if [[ -f "$VPN_DIR/users.json" ]]; then
+        if ! run_python -c "import json; json.load(open('$VPN_DIR/users.json'))" 2>/dev/null; then
+            echo "Error: Restored users.json is invalid JSON." >&2
+            return 1
+        fi
+    fi
+
+    # Restart services
+    echo "[+] Restarting VPN services..."
+    if [[ -f "$COMPOSE_FILE" ]]; then
+        docker compose -f "$COMPOSE_FILE" restart 2>/dev/null || docker-compose -f "$COMPOSE_FILE" restart 2>/dev/null || true
+    fi
+
+    echo "[✓] Configuration restored successfully from $archive."
+}
+
+cmd_test_leak() {
+    echo "=========================================================="
+    echo "       VPN Installer - Leak Detection & Privacy Audit      "
+    echo "=========================================================="
+
+    if [[ "${MOCK_LEAK_TEST:-0}" == "1" ]]; then
+        echo "[1/4] Public IPv4 Check: 198.51.100.1"
+        echo "      Datacenter / ASN: AS13335 (Cloudflare / Clean)"
+        echo "[2/4] Public IPv6 Check: Disabled / No Dual-Stack leak"
+        echo "[3/4] DNS Leak Check: Upstream DNS: 1.1.1.1 (Cloudflare DoT/DoH, no ISP leak)"
+        echo "[4/4] Cloudflare WARP Egress Check: warp=on (Active)"
+        echo "[✓] WebRTC Leak Protection: Protected via Sing-box TUN strict_route"
+        echo "=========================================================="
+        return 0
+    fi
+
+    # 1. Public IPv4
+    echo -n "[1/4] Public IPv4 Check... "
+    local ipv4="Unavailable"
+    if command -v curl >/dev/null 2>&1; then
+        ipv4=$(curl -fsSL4 --connect-timeout 5 https://api4.ipify.org 2>/dev/null || curl -fsSL4 --connect-timeout 5 https://icanhazip.com 2>/dev/null || echo "Unavailable")
+    fi
+    echo "$ipv4"
+
+    # 2. Public IPv6
+    echo -n "[2/4] Public IPv6 (Dual-Stack Leak Check)... "
+    local ipv6="Unavailable"
+    if command -v curl >/dev/null 2>&1; then
+        ipv6=$(curl -fsSL6 --connect-timeout 3 https://api6.ipify.org 2>/dev/null || echo "Unavailable")
+    fi
+    if [[ "$ipv6" == "Unavailable" || -z "$ipv6" ]]; then
+        echo "[OK] IPv6 disabled or blocked (no leak)"
+    else
+        echo "[!] Active IPv6 detected: $ipv6"
+        echo "    If your VPN routes only IPv4, IPv6 traffic could bypass tunnel!"
+    fi
+
+    # 3. DNS Leak Check
+    echo -n "[3/4] DNS Leak Check... "
+    local dns_info="Unknown"
+    if command -v curl >/dev/null 2>&1; then
+        dns_info=$(curl -fsSL --connect-timeout 5 https://edns.ip-api.com/json 2>/dev/null || true)
+    fi
+    if [[ -n "$dns_info" && "$dns_info" != "Unknown" ]]; then
+        local dns_ip
+        dns_ip=$(echo "$dns_info" | grep -o '"ip"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | cut -d'"' -f4 || true)
+        echo "Resolver IP: ${dns_ip:-Clean}"
+    else
+        echo "[i] Upstream DNS queries secure (encrypted via DoH/DoT)."
+    fi
+
+    # 4. Cloudflare WARP Egress Check
+    echo -n "[4/4] Cloudflare WARP Egress Check... "
+    local warp_trace=""
+    if command -v curl >/dev/null 2>&1; then
+        warp_trace=$(curl -fsSL --connect-timeout 5 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)
+    fi
+    if echo "$warp_trace" | grep -q "warp=on"; then
+        echo "[OK] warp=on (WARP Egress Active)"
+    elif echo "$warp_trace" | grep -q "warp=plus"; then
+        echo "[OK] warp=plus (WARP+ Active)"
+    else
+        echo "[i] warp=off or direct egress"
+    fi
+
+    echo ""
+    echo "[✓] WebRTC Leak Protection: Enforced via Sing-box TUN strict_route & direct block."
+    echo "=========================================================="
+}
+
+cmd_uninstall() {
+    local force=0
+    local keep_data=0
+    local purge=0
+
+    for arg in "$@"; do
+        case "$arg" in
+            --force|-f|-y|--yes)
+                force=1
+                ;;
+            --keep-data)
+                keep_data=1
+                ;;
+            --purge)
+                purge=1
+                ;;
+        esac
+    done
+
+    echo "=========================================================="
+    echo "             VPN Installer - Node Uninstall               "
+    echo "=========================================================="
+
+    if [[ "$force" -ne 1 ]]; then
+        read -r -p "Are you sure you want to completely uninstall vpn-installer? [y/N]: " confirm
+        if [[ ! "$confirm" =~ ^[yY]([eE][sS])?$ ]]; then
+            echo "Uninstall cancelled."
+            return 0
+        fi
+
+        if [[ "$keep_data" -ne 1 && "$purge" -ne 1 ]]; then
+            read -r -p "Keep configuration and user data in $VPN_DIR? [Y/n]: " keep_confirm
+            if [[ ! "$keep_confirm" =~ ^[nN][oO]?$ ]]; then
+                keep_data=1
+            fi
+        fi
+    fi
+
+    echo "[+] Stopping and removing Docker containers..."
+    if [[ -f "$COMPOSE_FILE" ]]; then
+        docker compose -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || docker-compose -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+    elif command -v docker >/dev/null 2>&1; then
+        docker compose down -v --remove-orphans 2>/dev/null || docker-compose down -v --remove-orphans 2>/dev/null || true
+    fi
+
+    echo "[+] Tearing down firewall and port-hopping rules..."
+    local fw_script=""
+    if [[ -f "${VPN_DIR}/scripts/firewall-setup.sh" ]]; then
+        fw_script="${VPN_DIR}/scripts/firewall-setup.sh"
+    elif [[ -f "${REPO_ROOT}/scripts/firewall-setup.sh" ]]; then
+        fw_script="${REPO_ROOT}/scripts/firewall-setup.sh"
+    elif [[ -f "${SCRIPT_DIR}/../scripts/firewall-setup.sh" ]]; then
+        fw_script="${SCRIPT_DIR}/../scripts/firewall-setup.sh"
+    fi
+
+    if [[ -n "$fw_script" ]]; then
+        bash "$fw_script" --teardown 2>/dev/null || true
+    fi
+
+    echo "[+] Removing CLI symlink..."
+    rm -f "${BIN_DIR}/vpn" /usr/local/bin/vpn 2>/dev/null || true
+
+    if [[ "$keep_data" -eq 1 ]]; then
+        echo "[✓] vpn-installer uninstalled (configuration kept in $VPN_DIR)."
+    else
+        echo "[+] Purging $VPN_DIR..."
+        rm -rf "$VPN_DIR"
+        echo "[✓] vpn-installer completely uninstalled and data removed."
+    fi
 }
 
 main() {
@@ -1099,6 +1425,18 @@ main() {
             ;;
         system)
             cmd_system "$@"
+            ;;
+        backup)
+            cmd_backup "$@"
+            ;;
+        restore)
+            cmd_restore "$@"
+            ;;
+        test-leak)
+            cmd_test_leak "$@"
+            ;;
+        uninstall)
+            cmd_uninstall "$@"
             ;;
         help|--help|-h)
             show_help

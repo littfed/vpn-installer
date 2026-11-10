@@ -169,11 +169,15 @@ setup_directories() {
         if [[ -f "${REPO_ROOT}/scripts/sub-server.py" ]]; then
             cp -f "${REPO_ROOT}/scripts/sub-server.py" "$VPN_DIR/scripts/sub-server.py"
         fi
+        if [[ -f "${REPO_ROOT}/scripts/firewall-setup.sh" ]]; then
+            cp -f "${REPO_ROOT}/scripts/firewall-setup.sh" "$VPN_DIR/scripts/firewall-setup.sh"
+        fi
         cp -f "${REPO_ROOT}/bin/vpn" "$VPN_DIR/bin/vpn"
     fi
     chmod 755 "$VPN_DIR/scripts/user-sync.sh" 2>/dev/null || true
     chmod 755 "$VPN_DIR/scripts/generate-warp-keys.py" 2>/dev/null || true
     chmod 755 "$VPN_DIR/scripts/sub-server.py" 2>/dev/null || true
+    chmod 755 "$VPN_DIR/scripts/firewall-setup.sh" 2>/dev/null || true
     chmod 755 "$VPN_DIR/bin/vpn" 2>/dev/null || true
 
     # Install CLI symlink
@@ -821,6 +825,19 @@ start_services() {
     "${BIN_DIR}/vpn" status || true
 }
 
+configure_firewall() {
+    if [[ "${SKIP_FIREWALL:-0}" == "1" ]]; then
+        log_info "Skipping firewall configuration as requested."
+        return 0
+    fi
+    log_info "Configuring UFW and Port Hopping iptables rules..."
+    if [[ -f "${VPN_DIR}/scripts/firewall-setup.sh" ]]; then
+        "${VPN_DIR}/scripts/firewall-setup.sh" || true
+    elif [[ -f "${REPO_ROOT}/scripts/firewall-setup.sh" ]]; then
+        "${REPO_ROOT}/scripts/firewall-setup.sh" || true
+    fi
+}
+
 main() {
     ENABLE_SUB_WEB="${ENABLE_SUB_WEB:-0}"
     for arg in "$@"; do
@@ -841,6 +858,7 @@ main() {
     setup_caddy_decoy
     setup_mtproto
     render_singbox_config
+    configure_firewall
     start_services
 }
 
