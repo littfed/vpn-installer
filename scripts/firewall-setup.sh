@@ -57,8 +57,14 @@ detect_ssh_port() {
 teardown_firewall() {
     echo "[+] Tearing down vpn-installer firewall and port-hopping rules..."
 
-    # Teardown iptables NAT PREROUTING redirect
+    # Teardown iptables FORWARD rules for AmneziaWG
     if command -v iptables >/dev/null 2>&1; then
+        while iptables -C FORWARD -s 10.8.0.0/16 -j ACCEPT 2>/dev/null; do
+            iptables -D FORWARD -s 10.8.0.0/16 -j ACCEPT 2>/dev/null || break
+        done
+        while iptables -C FORWARD -d 10.8.0.0/16 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do
+            iptables -D FORWARD -d 10.8.0.0/16 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || break
+        done
         while iptables -t nat -C PREROUTING -p udp --dport 20000:30000 -j REDIRECT --to-ports 443 2>/dev/null; do
             iptables -t nat -D PREROUTING -p udp --dport 20000:30000 -j REDIRECT --to-ports 443 2>/dev/null || break
         done
@@ -85,6 +91,7 @@ teardown_firewall() {
         ufw delete allow 8443/udp 2>/dev/null || true
         ufw delete allow 48291/udp 2>/dev/null || true
         ufw delete allow 20000:30000/udp 2>/dev/null || true
+        ufw route delete allow in on awg0 2>/dev/null || true
     fi
 
     echo "[✓] Firewall rules cleared."
@@ -143,6 +150,14 @@ setup_firewall() {
         done
         if ! iptables -t nat -C POSTROUTING -s 10.8.0.0/16 -o "$def_if" -j MASQUERADE 2>/dev/null; then
             iptables -t nat -A POSTROUTING -s 10.8.0.0/16 -o "$def_if" -j MASQUERADE 2>/dev/null || true
+        fi
+
+        # Allow forwarding for AmneziaWG subnet (10.8.0.0/16)
+        if ! iptables -C FORWARD -s 10.8.0.0/16 -j ACCEPT 2>/dev/null; then
+            iptables -I FORWARD 1 -s 10.8.0.0/16 -j ACCEPT
+        fi
+        if ! iptables -C FORWARD -d 10.8.0.0/16 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; then
+            iptables -I FORWARD 2 -d 10.8.0.0/16 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
         fi
     fi
 

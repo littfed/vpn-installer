@@ -156,6 +156,10 @@ setup_directories() {
     chmod 700 "$VPN_DIR"
 
     # Copy templates, scripts and CLI
+    if [[ -f "${VPN_DIR}/templates/docker-compose.yml" && ! -f "$VPN_DIR/docker-compose.yml" ]]; then
+        cp -f "${VPN_DIR}/templates/docker-compose.yml" "$VPN_DIR/docker-compose.yml"
+    fi
+
     if [[ "$REPO_ROOT" != "$VPN_DIR" ]]; then
         cp -f "${REPO_ROOT}/templates/docker-compose.yml" "$VPN_DIR/docker-compose.yml"
         cp -f "${REPO_ROOT}/templates/config.json.template" "$VPN_DIR/templates/config.json.template"
