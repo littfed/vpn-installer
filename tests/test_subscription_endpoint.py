@@ -268,12 +268,15 @@ class TestSubscriptionEndpoint:
             assert status == 200
             singbox_cfg = json.loads(body)
             assert "inbounds" in singbox_cfg
-            assert any(ib.get("type") == "tun" for ib in singbox_cfg["inbounds"]), "Must configure TUN inbound"
+            tun_inbounds = [ib for ib in singbox_cfg["inbounds"] if ib.get("type") == "tun"]
+            assert len(tun_inbounds) > 0, "Must configure TUN inbound"
+            assert tun_inbounds[0].get("address") == ["172.19.0.1/30"], "TUN inbound must configure modern address array"
             assert "dns" in singbox_cfg
             # Split DNS: Yandex DoH for RU
             dns_servers = singbox_cfg["dns"]["servers"]
-            assert any("77.88.8.8" in s.get("address", "") for s in dns_servers), "Split DNS must include Yandex DoH (77.88.8.8)"
-            assert any("1.1.1.1" in s.get("address", "") for s in dns_servers), "Split DNS must include remote DoH (1.1.1.1)"
+            assert any(s.get("server") == "77.88.8.8" and s.get("type") == "https" for s in dns_servers), "Split DNS must include Yandex DoH (77.88.8.8)"
+            assert any(s.get("server") == "1.1.1.1" and s.get("type") == "https" for s in dns_servers), "Split DNS must include remote DoH (1.1.1.1)"
+            assert singbox_cfg.get("route", {}).get("default_domain_resolver") == "dns-direct"
             # Split routing: geosite-ru and geoip-ru -> direct
             route = singbox_cfg.get("route", {})
             rules = route.get("rules", [])

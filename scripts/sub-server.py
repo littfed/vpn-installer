@@ -140,53 +140,35 @@ def build_singbox_json(manifest, user):
             "servers": [
                 {
                     "tag": "dns-remote",
-                    "address": "https://1.1.1.1/dns-query",
-                    "address_resolver": "dns-direct",
-                    "strategy": "prefer_ipv4",
+                    "type": "https",
+                    "server": "1.1.1.1",
+                    "path": "/dns-query",
                     "detour": "vless-proxy"
                 },
                 {
                     "tag": "dns-direct",
-                    "address": "https://77.88.8.8/dns-query",
-                    "strategy": "prefer_ipv4",
+                    "type": "https",
+                    "server": "77.88.8.8",
+                    "path": "/dns-query",
                     "detour": "direct"
-                },
-                {
-                    "tag": "dns-block",
-                    "address": "rcode://success"
                 }
             ],
             "rules": [
                 {
-                    "outbound": "any",
-                    "server": "dns-direct"
-                },
-                {
                     "rule_set": "geosite-category-ads-all",
-                    "server": "dns-block",
-                    "disable_cache": True
+                    "action": "reject"
                 },
                 {
-                    "rule_set": [
-                        "geosite-ru",
-                        "geosite-yandex",
-                        "geosite-vk",
-                        "geosite-mailru"
-                    ],
+                    "rule_set": "geosite-ru",
                     "server": "dns-direct"
                 },
                 {
-                    "rule_set": [
-                        "geosite-openai",
-                        "geosite-anthropic",
-                        "geosite-google"
-                    ],
+                    "rule_set": "geosite-openai",
                     "server": "dns-remote"
                 }
             ],
             "final": "dns-remote",
             "strategy": "prefer_ipv4",
-            "independent_cache": True,
             "reverse_mapping": True
         },
         "inbounds": [
@@ -194,12 +176,12 @@ def build_singbox_json(manifest, user):
                 "type": "tun",
                 "tag": "tun-in",
                 "interface_name": "sing-tun",
-                "inet4_address": "172.19.0.1/30",
+                "address": [
+                    "172.19.0.1/30"
+                ],
                 "auto_route": True,
                 "strict_route": True,
-                "stack": "system",
-                "sniff": True,
-                "sniff_override_destination": True
+                "stack": "system"
             }
         ],
         "outbounds": [
@@ -247,13 +229,10 @@ def build_singbox_json(manifest, user):
             {
                 "type": "block",
                 "tag": "block"
-            },
-            {
-                "type": "dns",
-                "tag": "dns-out"
             }
         ],
         "route": {
+            "default_domain_resolver": "dns-direct",
             "rule_set": [
                 {
                     "tag": "geosite-category-ads-all",
@@ -286,12 +265,15 @@ def build_singbox_json(manifest, user):
             ],
             "rules": [
                 {
+                    "action": "sniff"
+                },
+                {
                     "protocol": "dns",
-                    "outbound": "dns-out"
+                    "action": "hijack-dns"
                 },
                 {
                     "port": 53,
-                    "outbound": "dns-out"
+                    "action": "hijack-dns"
                 },
                 {
                     "rule_set": "geosite-category-ads-all",
