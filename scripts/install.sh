@@ -37,16 +37,59 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+INSTALL_LOG="${INSTALL_LOG:-${VPN_DIR}/install.log}"
+VERBOSE="${VERBOSE:-0}"
+
+log_to_file() {
+    local level="$1"
+    shift
+    local ts
+    ts="$(date -u +'%Y-%m-%d %H:%M:%SZ' 2>/dev/null || date +'%Y-%m-%d %H:%M:%S')"
+    if [[ -n "${INSTALL_LOG:-}" ]]; then
+        mkdir -p "$(dirname "$INSTALL_LOG")" 2>/dev/null || true
+        echo "[${ts}] [${level}] $*" >> "$INSTALL_LOG" 2>/dev/null || true
+    fi
+}
+
 log_info() {
+    log_to_file "INFO" "$*"
     echo -e "${GREEN}[+]${NC} $*"
 }
 
 log_warn() {
+    log_to_file "WARN" "$*"
     echo -e "${YELLOW}[!]${NC} $*"
 }
 
 log_error() {
+    log_to_file "ERROR" "$*"
     echo -e "${RED}[x]${NC} $*" >&2
+}
+
+assert_step() {
+    local step_name="$1"
+    local check_cmd="$2"
+    local error_msg="${3:-Assertion failed for ${step_name}}"
+
+    log_info "Asserting: ${step_name}..."
+    if eval "$check_cmd" >> "${INSTALL_LOG}" 2>&1; then
+        log_info "  [OK] ${step_name}"
+        return 0
+    else
+        log_error "  [FAILED] ${step_name}"
+        log_error "${error_msg}"
+        echo "" >&2
+        echo "==========================================================" >&2
+        echo "             POST-FLIGHT ASSERTION FAILED                 " >&2
+        echo "Step:        ${step_name}" >&2
+        echo "Error:       ${error_msg}" >&2
+        echo "Recent logs from ${INSTALL_LOG}:" >&2
+        if [[ -f "$INSTALL_LOG" ]]; then
+            tail -n 25 "$INSTALL_LOG" >&2 || true
+        fi
+        echo "==========================================================" >&2
+        exit 1
+    fi
 }
 
 check_root() {
@@ -176,12 +219,24 @@ setup_directories() {
         if [[ -f "${REPO_ROOT}/scripts/firewall-setup.sh" ]]; then
             cp -f "${REPO_ROOT}/scripts/firewall-setup.sh" "$VPN_DIR/scripts/firewall-setup.sh"
         fi
+        if [[ -f "${REPO_ROOT}/scripts/baseline.sh" ]]; then
+            cp -f "${REPO_ROOT}/scripts/baseline.sh" "$VPN_DIR/scripts/baseline.sh"
+        fi
+        if [[ -f "${REPO_ROOT}/scripts/doctor.py" ]]; then
+            cp -f "${REPO_ROOT}/scripts/doctor.py" "$VPN_DIR/scripts/doctor.py"
+        fi
+        if [[ -f "${REPO_ROOT}/scripts/fleet-manager.py" ]]; then
+            cp -f "${REPO_ROOT}/scripts/fleet-manager.py" "$VPN_DIR/scripts/fleet-manager.py"
+        fi
         cp -f "${REPO_ROOT}/bin/vpn" "$VPN_DIR/bin/vpn"
     fi
     chmod 755 "$VPN_DIR/scripts/user-sync.sh" 2>/dev/null || true
     chmod 755 "$VPN_DIR/scripts/generate-warp-keys.py" 2>/dev/null || true
     chmod 755 "$VPN_DIR/scripts/sub-server.py" 2>/dev/null || true
     chmod 755 "$VPN_DIR/scripts/firewall-setup.sh" 2>/dev/null || true
+    chmod 755 "$VPN_DIR/scripts/baseline.sh" 2>/dev/null || true
+    chmod 755 "$VPN_DIR/scripts/doctor.py" 2>/dev/null || true
+    chmod 755 "$VPN_DIR/scripts/fleet-manager.py" 2>/dev/null || true
     chmod 755 "$VPN_DIR/bin/vpn" 2>/dev/null || true
 
     # Install CLI symlink
@@ -1028,29 +1083,108 @@ configure_firewall() {
     fi
 }
 
+take_baseline_snapshot() {
+    if [[ "${SKIP_BASELINE:-0}" == "1" ]]; then
+        log_info "Skipping OS baseline snapshot as requested."
+        return 0
+    fi
+    local b_script=""
+    if [[ -f "${VPN_DIR}/scripts/baseline.sh" ]]; then
+        b_script="${VPN_DIR}/scripts/baseline.sh"
+    elif [[ -f "${REPO_ROOT}/scripts/baseline.sh" ]]; then
+        b_script="${REPO_ROOT}/scripts/baseline.sh"
+    fi
+
+    if [[ -n "$b_script" ]]; then
+        log_info "Capturing OS baseline snapshot prior to applying modifications..."
+        SKIP_ROOT_CHECK="${SKIP_ROOT_CHECK:-0}" "$b_script" snapshot || log_warn "Baseline snapshot returned non-zero code; proceeding with installation."
+    fi
+}
+
 main() {
     ENABLE_SUB_WEB="${ENABLE_SUB_WEB:-0}"
+    ROLLBACK_BASELINE="${ROLLBACK_BASELINE:-0}"
+    SKIP_ASSERTIONS="${SKIP_ASSERTIONS:-0}"
+    local rollback_target="latest"
+
     for arg in "$@"; do
         case "$arg" in
             --enable-sub-web)
                 ENABLE_SUB_WEB=1
                 ;;
+            --rollback|-r)
+                ROLLBACK_BASELINE=1
+                ;;
+            --rollback=*)
+                ROLLBACK_BASELINE=1
+                rollback_target="${arg#*=}"
+                ;;
+            --verbose|-v)
+                VERBOSE=1
+                ;;
+            --skip-assertions)
+                SKIP_ASSERTIONS=1
+                ;;
         esac
     done
 
+    if [[ "$ROLLBACK_BASELINE" == "1" ]]; then
+        local b_script=""
+        if [[ -f "${VPN_DIR}/scripts/baseline.sh" ]]; then
+            b_script="${VPN_DIR}/scripts/baseline.sh"
+        elif [[ -f "${REPO_ROOT}/scripts/baseline.sh" ]]; then
+            b_script="${REPO_ROOT}/scripts/baseline.sh"
+        fi
+        if [[ -n "$b_script" ]]; then
+            exec "$b_script" rollback "$rollback_target"
+        else
+            log_error "baseline.sh not found for rollback."
+            exit 1
+        fi
+    fi
+
     log_info "Starting VPN Installer bootstrap..."
+    log_info "Logging detailed installation output to ${INSTALL_LOG}"
     check_root
     check_os
     ensure_dependencies
+    if [[ "$SKIP_ASSERTIONS" != "1" && "$SKIP_DOCKER_INSTALL" != "1" ]]; then
+        assert_step "Docker & Compose Availability" 'command -v docker >/dev/null 2>&1 && (docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1)' 'Docker or docker compose plugin is not installed or accessible.'
+    fi
+
     setup_directories
+    assert_step "Directory Structure" '[[ -d "$VPN_DIR" && -d "$VPN_DIR/certs" && -d "$VPN_DIR/templates" ]]' 'Required directories were not created.'
+
+    take_baseline_snapshot
     generate_crypto_keys
+    assert_step "Manifest & Crypto Keys" '[[ -f "$VPN_DIR/manifest.json" && -s "$VPN_DIR/manifest.json" ]]' 'manifest.json missing or empty.'
+
     setup_tls_certificates
+    assert_step "TLS Certificates" '[[ -f "$VPN_DIR/certs/fullchain.pem" && -f "$VPN_DIR/certs/privkey.pem" ]]' 'TLS fullchain.pem or privkey.pem missing.'
+
     setup_caddy_decoy
     setup_mtproto
     render_singbox_config
+    assert_step "Sing-Box Config Schema" '[[ -f "$VPN_DIR/config.json" && -s "$VPN_DIR/config.json" ]]' 'config.json missing or empty.'
+
     render_awg_config
+    assert_step "AmneziaWG Configuration" '[[ -f "$VPN_DIR/awg/awg0.conf" && -s "$VPN_DIR/awg/awg0.conf" ]]' 'awg0.conf missing or empty.'
+
     configure_firewall
+    if [[ "$SKIP_ASSERTIONS" != "1" && "${SKIP_FIREWALL:-0}" != "1" && "$(id -u)" -eq 0 ]]; then
+        assert_step "IPv4 Forwarding" '[[ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 1)" == "1" ]]' 'Kernel net.ipv4.ip_forward is disabled.'
+        if command -v iptables >/dev/null 2>&1; then
+            assert_step "Firewall Forward Rules" 'iptables -C FORWARD -s 10.8.0.0/16 -j ACCEPT 2>/dev/null || iptables -L FORWARD -n 2>/dev/null | grep -q "10.8.0.0/16"' 'iptables FORWARD rule for 10.8.0.0/16 is not active.'
+        fi
+    fi
+
     start_services
+    if [[ "$SKIP_ASSERTIONS" != "1" && "$SKIP_CONTAINER_START" != "1" ]]; then
+        assert_step "Core Containers Running" 'docker inspect -f "{{.State.Running}}" sing-box-vpn 2>/dev/null | grep -q true && docker inspect -f "{{.State.Running}}" amneziawg 2>/dev/null | grep -q true' 'Core containers sing-box or amneziawg are not running.'
+        assert_step "Listening VPN Ports" 'ss -tulpn 2>/dev/null | grep -E ":(443|8443|48291)\b" >/dev/null' 'Expected ports (443, 8443, 48291) are not listening.'
+    fi
+
+    log_info "All installation steps and post-flight assertions passed successfully!"
 }
 
 main "$@"

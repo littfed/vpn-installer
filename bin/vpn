@@ -46,10 +46,21 @@ Available Commands:
   system <action>          Manage system components (enable-sub, disable-sub, status, harden)
   backup [file]            Create backup archive (.tar.gz) of node configurations
   restore <archive>        Restore node configuration from backup archive
+  baseline [action]        Manage OS baseline snapshots (snapshot, rollback, list, show)
+  rollback-baseline [name] Rollback system network & firewall to clean baseline snapshot
+  doctor [--json]          Run deep node health diagnostics and validation audit
   test-leak                Run diagnostic audit for IP, DNS, WebRTC, and WARP leaks
   probe [args]             Run Canary Probe synthetic audit from Russia against nodes
+  node <action> [args]     Fleet node management (list, add, remove, test)
   uninstall [--force]      Uninstall node containers, firewall rules, and CLI
   help                     Show this help message
+
+Node Fleet Actions:
+  vpn node list [--json]        List registered nodes in the fleet
+  vpn node add <ip> [options]   Automated provisioning and registration of a new node
+                                Options: --name <name>, --user <user>, --password <pwd>, --key <path>
+  vpn node remove <name|ip>     Remove a node from the fleet registry
+  vpn node test [--node <name>] Run Canary Probe against fleet nodes
 
 Probe Actions:
   vpn probe [--node <name>] [--protocol <vless|hy2|tuic|awg|mtproto>] [--json]
@@ -2105,6 +2116,74 @@ cmd_probe() {
         "$@"
 }
 
+cmd_baseline() {
+    local b_script=""
+    if [[ -f "${VPN_DIR}/scripts/baseline.sh" ]]; then
+        b_script="${VPN_DIR}/scripts/baseline.sh"
+    elif [[ -f "${REPO_ROOT}/scripts/baseline.sh" ]]; then
+        b_script="${REPO_ROOT}/scripts/baseline.sh"
+    fi
+
+    if [[ -z "$b_script" ]]; then
+        echo "Error: baseline script not found in ${VPN_DIR}/scripts or ${REPO_ROOT}/scripts" >&2
+        return 1
+    fi
+
+    "$b_script" "$@"
+}
+
+cmd_doctor() {
+    local doc_script=""
+    if [[ -f "${VPN_DIR}/scripts/doctor.py" ]]; then
+        doc_script="${VPN_DIR}/scripts/doctor.py"
+    elif [[ -f "${REPO_ROOT}/scripts/doctor.py" ]]; then
+        doc_script="${REPO_ROOT}/scripts/doctor.py"
+    fi
+
+    if [[ -z "$doc_script" ]]; then
+        echo "Error: doctor.py not found in ${VPN_DIR}/scripts or ${REPO_ROOT}/scripts" >&2
+        return 1
+    fi
+
+    run_python "$doc_script" --vpn-dir "$VPN_DIR" "$@"
+}
+
+cmd_node() {
+    local fm_script=""
+    if [[ -f "${VPN_DIR}/scripts/fleet-manager.py" ]]; then
+        fm_script="${VPN_DIR}/scripts/fleet-manager.py"
+    elif [[ -f "${REPO_ROOT}/scripts/fleet-manager.py" ]]; then
+        fm_script="${REPO_ROOT}/scripts/fleet-manager.py"
+    fi
+
+    if [[ -z "$fm_script" ]]; then
+        echo "Error: fleet-manager.py not found in ${VPN_DIR}/scripts or ${REPO_ROOT}/scripts" >&2
+        return 1
+    fi
+
+    local subcmd="${1:-list}"
+    shift || true
+
+    case "$subcmd" in
+        add)
+            run_python "$fm_script" --vpn-dir "$VPN_DIR" add "$@"
+            ;;
+        list|ls)
+            run_python "$fm_script" --vpn-dir "$VPN_DIR" list "$@"
+            ;;
+        remove|rm|del)
+            run_python "$fm_script" --vpn-dir "$VPN_DIR" remove "$@"
+            ;;
+        test|check|probe)
+            cmd_probe "$@"
+            ;;
+        *)
+            echo "Usage: vpn node <list|add|remove|test> [args]" >&2
+            return 1
+            ;;
+    esac
+}
+
 main() {
     if [[ $# -eq 0 ]]; then
         show_help
@@ -2133,6 +2212,15 @@ main() {
         restore)
             cmd_restore "$@"
             ;;
+        baseline)
+            cmd_baseline "$@"
+            ;;
+        rollback-baseline)
+            cmd_baseline rollback "$@"
+            ;;
+        doctor)
+            cmd_doctor "$@"
+            ;;
         test-leak)
             cmd_test_leak "$@"
             ;;
@@ -2140,14 +2228,7 @@ main() {
             cmd_probe "$@"
             ;;
         node)
-            local subcmd="${1:-}"
-            if [[ "$subcmd" == "test" || "$subcmd" == "check" || "$subcmd" == "probe" ]]; then
-                shift
-                cmd_probe "$@"
-            else
-                echo "Usage: vpn node <test|check|probe> [args]" >&2
-                return 1
-            fi
+            cmd_node "$@"
             ;;
         uninstall)
             cmd_uninstall "$@"
