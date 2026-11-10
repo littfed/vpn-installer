@@ -331,3 +331,141 @@ class TestSubscriptionEndpoint:
         finally:
             proc.terminate()
             proc.wait(timeout=5)
+
+    def test_sub_server_multi_node_support(self, tmp_path):
+        """Ticket 07 / Multi-node: test nodes.json pooling across Clash, Sing-box, and Base64."""
+        vpn_dir = tmp_path / "opt" / "vpn-installer"
+        vpn_dir.mkdir(parents=True, exist_ok=True)
+        sub_server_script = REPO_ROOT / "scripts" / "sub-server.py"
+
+        token = "multinodetoken123"
+        users_file = vpn_dir / "users.json"
+        users_file.write_text(
+            json.dumps({
+                "users": [{
+                    "name": "tester",
+                    "uuid": "00000000-1111-2222-3333-444444444444",
+                    "password": "tester_hy2_pass",
+                    "sub_token": token,
+                    "status": "active"
+                }]
+            }),
+            encoding="utf-8"
+        )
+
+        nodes_file = vpn_dir / "nodes.json"
+        nodes_file.write_text(
+            json.dumps({
+                "nodes": [
+                    {
+                        "name": "NL-Exit-1",
+                        "server": "198.51.100.1",
+                        "protocols": {
+                            "vless_reality": {
+                                "enabled": True,
+                                "port": 443,
+                                "sni": "gateway.icloud.com",
+                                "public_key": "NL_PBK_KEY_1",
+                                "short_id": "NL_SID_1"
+                            },
+                            "hysteria2": {
+                                "enabled": True,
+                                "port": 443,
+                                "obfs_password": "nl_obfs_password_1"
+                            }
+                        }
+                    },
+                    {
+                        "name": "DE-Exit-2",
+                        "server": "203.0.113.2",
+                        "protocols": {
+                            "vless_reality": {
+                                "enabled": True,
+                                "port": 8443,
+                                "sni": "gateway.icloud.com",
+                                "public_key": "DE_PBK_KEY_2",
+                                "short_id": "DE_SID_2"
+                            },
+                            "hysteria2": {
+                                "enabled": True,
+                                "port": 8443,
+                                "obfs_password": "de_obfs_password_2"
+                            }
+                        }
+                    }
+                ]
+            }),
+            encoding="utf-8"
+        )
+
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        proc = subprocess.Popen(
+            [sys.executable, str(sub_server_script), "--host", "127.0.0.1", "--port", str(port), "--vpn-dir", str(vpn_dir)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        try:
+            time.sleep(1.0)
+            base_url = f"http://127.0.0.1:{port}"
+
+            def fetch(path):
+                req = urllib.request.Request(f"{base_url}{path}")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    return resp.status, resp.read().decode("utf-8")
+
+            # 1. Clash Multi-Node
+            status, clash_body = fetch(f"/sub/{token}?format=clash")
+            assert status == 200
+            assert "NL-Exit-1 - Reality" in clash_body
+            assert "DE-Exit-2 - Reality" in clash_body
+            assert "NL-Exit-1 - Hysteria2" in clash_body
+            assert "DE-Exit-2 - Hysteria2" in clash_body
+            assert "198.51.100.1" in clash_body
+            assert "203.0.113.2" in clash_body
+
+            # 2. Sing-box Multi-Node
+            status, singbox_body = fetch(f"/sub/{token}?format=singbox")
+            assert status == 200
+            sb_cfg = json.loads(singbox_body)
+            tags = [ob.get("tag") for ob in sb_cfg["outbounds"]]
+            assert "NL-Exit-1-Reality" in tags
+            assert "DE-Exit-2-Reality" in tags
+            assert "NL-Exit-1-Hy2" in tags
+            assert "DE-Exit-2-Hy2" in tags
+            assert "proxy-auto" in tags
+            assert "proxy" in tags
+            assert sb_cfg["route"]["final"] == "proxy"
+
+            urltest_ob = [ob for ob in sb_cfg["outbounds"] if ob.get("tag") == "proxy-auto"][0]
+            assert urltest_ob["type"] == "urltest"
+            assert "NL-Exit-1-Reality" in urltest_ob["outbounds"]
+            assert "DE-Exit-2-Reality" in urltest_ob["outbounds"]
+
+            selector_ob = [ob for ob in sb_cfg["outbounds"] if ob.get("tag") == "proxy"][0]
+            assert selector_ob["type"] == "selector"
+            assert "proxy-auto" in selector_ob["outbounds"]
+
+            doh_server = [s for s in sb_cfg["dns"]["servers"] if s.get("server") == "1.1.1.1"][0]
+            assert doh_server["detour"] == "proxy-auto"
+
+            # 3. Base64 Multi-Node
+            status, b64_body = fetch(f"/sub/{token}?format=base64")
+            assert status == 200
+            raw_uris = base64.b64decode(b64_body.strip()).decode("utf-8")
+            assert "#tester-Reality-NL-Exit-1" in raw_uris
+            assert "#tester-Reality-DE-Exit-2" in raw_uris
+            assert "#tester-Hy2-NL-Exit-1" in raw_uris
+            assert "#tester-Hy2-DE-Exit-2" in raw_uris
+            assert "198.51.100.1:443" in raw_uris
+            assert "203.0.113.2:8443" in raw_uris
+
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+

@@ -20,26 +20,81 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 
-def build_clash_yaml(manifest, user):
-    username = user.get("name", "user")
-    uuid = user.get("uuid", "")
-    password = user.get("password", "")
-
+def get_nodes(manifest, vpn_dir=None):
+    if vpn_dir:
+        nodes_file = os.path.join(vpn_dir, "nodes.json")
+        if os.path.isfile(nodes_file):
+            try:
+                with open(nodes_file, "r", encoding="utf-8") as nf:
+                    data = json.load(nf)
+                    if data.get("nodes"):
+                        return data["nodes"]
+            except Exception:
+                pass
+    if manifest.get("nodes"):
+        return manifest["nodes"]
     server_domain = (
         manifest.get("server", {}).get("domain")
         or manifest.get("server", {}).get("ipv4")
         or "127.0.0.1"
     )
+    return [
+        {
+            "name": server_domain,
+            "server": server_domain,
+            "protocols": manifest.get("protocols", {})
+        }
+    ]
 
-    vless = manifest.get("protocols", {}).get("vless_reality", {})
-    reality_port = vless.get("port", 443)
-    reality_sni = vless.get("sni", "gateway.icloud.com")
-    reality_pbk = vless.get("public_key", "")
-    reality_sid = vless.get("short_id", "")
 
-    hy2 = manifest.get("protocols", {}).get("hysteria2", {})
-    hy2_port = hy2.get("port", 443)
-    hy2_obfs = hy2.get("obfs_password", "")
+def build_clash_yaml(manifest, user, vpn_dir=None):
+    username = user.get("name", "user")
+    uuid = user.get("uuid", "")
+    password = user.get("password", "")
+    nodes = get_nodes(manifest, vpn_dir)
+
+    proxies_list = []
+    proxy_names = []
+
+    for idx, node in enumerate(nodes):
+        node_name = node.get("name", f"Node-{idx+1}")
+        host = node.get("server") or node.get("domain") or node.get("ipv4") or "127.0.0.1"
+        vless = node.get("protocols", {}).get("vless_reality", {})
+        hy2 = node.get("protocols", {}).get("hysteria2", {})
+
+        if vless.get("enabled", True) and vless.get("public_key"):
+            vless_name = f"{node_name} - Reality" if len(nodes) > 1 else "VLESS-Reality"
+            proxy_names.append(vless_name)
+            proxies_list.append(f"""  - name: "{vless_name}"
+    type: vless
+    server: {host}
+    port: {vless.get("port", 443)}
+    uuid: {uuid}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: {vless.get("sni", "gateway.icloud.com")}
+    reality-opts:
+      public-key: {vless.get("public_key", "")}
+      short-id: {vless.get("short_id", "")}
+    client-fingerprint: chrome""")
+
+        if hy2.get("enabled", True):
+            hy2_name = f"{node_name} - Hysteria2" if len(nodes) > 1 else "Hysteria2"
+            proxy_names.append(hy2_name)
+            proxies_list.append(f"""  - name: "{hy2_name}"
+    type: hysteria2
+    server: {host}
+    port: {hy2.get("port", 443)}
+    password: {password}
+    sni: {hy2.get("sni", vless.get("sni", "gateway.icloud.com"))}
+    skip-cert-verify: true
+    obfs: salamander
+    obfs-password: {hy2.get("obfs_password", "")}""")
+
+    proxies_yaml = "\n\n".join(proxies_list)
+    proxies_entries = "\n".join([f'      - "{p}"' for p in proxy_names])
 
     yaml_text = f"""# vpn-installer adaptive subscription - Clash.Meta / Mihomo
 port: 7890
@@ -50,30 +105,7 @@ log-level: info
 unified-delay: true
 
 proxies:
-  - name: "VLESS-Reality"
-    type: vless
-    server: {server_domain}
-    port: {reality_port}
-    uuid: {uuid}
-    network: tcp
-    tls: true
-    udp: true
-    flow: xtls-rprx-vision
-    servername: {reality_sni}
-    reality-opts:
-      public-key: {reality_pbk}
-      short-id: {reality_sid}
-    client-fingerprint: chrome
-
-  - name: "Hysteria2"
-    type: hysteria2
-    server: {server_domain}
-    port: {hy2_port}
-    password: {password}
-    sni: {reality_sni}
-    skip-cert-verify: true
-    obfs: salamander
-    obfs-password: {hy2_obfs}
+{proxies_yaml}
 
 proxy-groups:
   - name: "AUTO-FASTEST"
@@ -82,24 +114,21 @@ proxy-groups:
     interval: 300
     tolerance: 50
     proxies:
-      - "VLESS-Reality"
-      - "Hysteria2"
+{proxies_entries}
 
   - name: "FALLBACK"
     type: fallback
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     proxies:
-      - "VLESS-Reality"
-      - "Hysteria2"
+{proxies_entries}
 
   - name: "PROXY"
     type: select
     proxies:
       - "AUTO-FASTEST"
       - "FALLBACK"
-      - "VLESS-Reality"
-      - "Hysteria2"
+{proxies_entries}
 
 rules:
   - GEOIP,private,DIRECT,no-resolve
@@ -110,26 +139,89 @@ rules:
     return yaml_text.strip() + "\n"
 
 
-def build_singbox_json(manifest, user):
+def build_singbox_json(manifest, user, vpn_dir=None):
     username = user.get("name", "user")
     uuid = user.get("uuid", "")
     password = user.get("password", "")
+    nodes = get_nodes(manifest, vpn_dir)
 
-    server_domain = (
-        manifest.get("server", {}).get("domain")
-        or manifest.get("server", {}).get("ipv4")
-        or "127.0.0.1"
-    )
+    outbounds = []
+    proxy_tags = []
 
-    vless = manifest.get("protocols", {}).get("vless_reality", {})
-    reality_port = vless.get("port", 443)
-    reality_sni = vless.get("sni", "gateway.icloud.com")
-    reality_pbk = vless.get("public_key", "")
-    reality_sid = vless.get("short_id", "")
+    for idx, node in enumerate(nodes):
+        node_name = node.get("name", f"Node-{idx+1}")
+        host = node.get("server") or node.get("domain") or node.get("ipv4") or "127.0.0.1"
+        vless = node.get("protocols", {}).get("vless_reality", {})
+        hy2 = node.get("protocols", {}).get("hysteria2", {})
 
-    hy2 = manifest.get("protocols", {}).get("hysteria2", {})
-    hy2_port = hy2.get("port", 443)
-    hy2_obfs = hy2.get("obfs_password", "")
+        if vless.get("enabled", True) and vless.get("public_key"):
+            vless_tag = f"{node_name}-Reality" if len(nodes) > 1 else "vless-proxy"
+            proxy_tags.append(vless_tag)
+            outbounds.append({
+                "type": "vless",
+                "tag": vless_tag,
+                "server": host,
+                "server_port": vless.get("port", 443),
+                "uuid": uuid,
+                "flow": "xtls-rprx-vision",
+                "tls": {
+                    "enabled": True,
+                    "server_name": vless.get("sni", "gateway.icloud.com"),
+                    "utls": {
+                        "enabled": True,
+                        "fingerprint": "chrome"
+                    },
+                    "reality": {
+                        "enabled": True,
+                        "public_key": vless.get("public_key", ""),
+                        "short_id": vless.get("short_id", "")
+                    }
+                }
+            })
+
+        if hy2.get("enabled", True):
+            hy2_tag = f"{node_name}-Hy2" if len(nodes) > 1 else "hy2-proxy"
+            proxy_tags.append(hy2_tag)
+            outbounds.append({
+                "type": "hysteria2",
+                "tag": hy2_tag,
+                "server": host,
+                "server_port": hy2.get("port", 443),
+                "password": password,
+                "tls": {
+                    "enabled": True,
+                    "server_name": hy2.get("sni", vless.get("sni", "gateway.icloud.com")),
+                    "insecure": True
+                },
+                "obfs": {
+                    "type": "salamander",
+                    "password": hy2.get("obfs_password", "")
+                }
+            })
+
+    if len(proxy_tags) > 1:
+        outbounds.append({
+            "type": "urltest",
+            "tag": "proxy-auto",
+            "outbounds": list(proxy_tags),
+            "url": "https://www.gstatic.com/generate_204",
+            "interval": "5m",
+            "tolerance": 50
+        })
+        outbounds.append({
+            "type": "selector",
+            "tag": "proxy",
+            "outbounds": ["proxy-auto"] + list(proxy_tags),
+            "default": "proxy-auto"
+        })
+        final_proxy = "proxy"
+        dns_detour = "proxy-auto"
+    else:
+        final_proxy = proxy_tags[0] if proxy_tags else "direct"
+        dns_detour = final_proxy
+
+    outbounds.append({"type": "direct", "tag": "direct"})
+    outbounds.append({"type": "block", "tag": "block"})
 
     config = {
         "log": {
@@ -143,7 +235,7 @@ def build_singbox_json(manifest, user):
                     "type": "https",
                     "server": "1.1.1.1",
                     "path": "/dns-query",
-                    "detour": "vless-proxy"
+                    "detour": dns_detour
                 },
                 {
                     "tag": "dns-direct",
@@ -183,53 +275,7 @@ def build_singbox_json(manifest, user):
                 "listen_port": 20808
             }
         ],
-        "outbounds": [
-            {
-                "type": "vless",
-                "tag": "vless-proxy",
-                "server": server_domain,
-                "server_port": reality_port,
-                "uuid": uuid,
-                "flow": "xtls-rprx-vision",
-                "tls": {
-                    "enabled": True,
-                    "server_name": reality_sni,
-                    "utls": {
-                        "enabled": True,
-                        "fingerprint": "chrome"
-                    },
-                    "reality": {
-                        "enabled": True,
-                        "public_key": reality_pbk,
-                        "short_id": reality_sid
-                    }
-                }
-            },
-            {
-                "type": "hysteria2",
-                "tag": "hy2-proxy",
-                "server": server_domain,
-                "server_port": hy2_port,
-                "password": password,
-                "tls": {
-                    "enabled": True,
-                    "server_name": reality_sni,
-                    "insecure": True
-                },
-                "obfs": {
-                    "type": "salamander",
-                    "password": hy2_obfs
-                }
-            },
-            {
-                "type": "direct",
-                "tag": "direct"
-            },
-            {
-                "type": "block",
-                "tag": "block"
-            }
-        ],
+        "outbounds": outbounds,
         "http_clients": [
             {
                 "tag": "direct-client"
@@ -286,38 +332,38 @@ def build_singbox_json(manifest, user):
                     "outbound": "direct"
                 }
             ],
-            "final": "vless-proxy",
+            "final": final_proxy,
             "auto_detect_interface": True
         }
     }
     return json.dumps(config, indent=2, ensure_ascii=False) + "\n"
 
 
-def build_base64_uris(manifest, user):
+def build_base64_uris(manifest, user, vpn_dir=None):
     username = user.get("name", "user")
     uuid = user.get("uuid", "")
     password = user.get("password", "")
+    nodes = get_nodes(manifest, vpn_dir)
 
-    server_domain = (
-        manifest.get("server", {}).get("domain")
-        or manifest.get("server", {}).get("ipv4")
-        or "127.0.0.1"
-    )
+    uris = []
+    for idx, node in enumerate(nodes):
+        node_name = node.get("name", f"Node-{idx+1}")
+        host = node.get("server") or node.get("domain") or node.get("ipv4") or "127.0.0.1"
+        vless = node.get("protocols", {}).get("vless_reality", {})
+        hy2 = node.get("protocols", {}).get("hysteria2", {})
 
-    vless = manifest.get("protocols", {}).get("vless_reality", {})
-    reality_port = vless.get("port", 443)
-    reality_sni = vless.get("sni", "gateway.icloud.com")
-    reality_pbk = vless.get("public_key", "")
-    reality_sid = vless.get("short_id", "")
+        suffix = f"-{node_name}" if len(nodes) > 1 else ""
 
-    hy2 = manifest.get("protocols", {}).get("hysteria2", {})
-    hy2_port = hy2.get("port", 443)
-    hy2_obfs = hy2.get("obfs_password", "")
+        if vless.get("enabled", True) and vless.get("public_key"):
+            uris.append(
+                f"vless://{uuid}@{host}:{vless.get('port', 443)}?security=reality&flow=xtls-rprx-vision&pbk={vless.get('public_key', '')}&sni={vless.get('sni', 'gateway.icloud.com')}&sid={vless.get('short_id', '')}&fp=chrome#{username}-Reality{suffix}"
+            )
+        if hy2.get("enabled", True):
+            uris.append(
+                f"hysteria2://{password}@{host}:{hy2.get('port', 443)}/?sni={hy2.get('sni', vless.get('sni', 'gateway.icloud.com'))}&obfs=salamander&obfs-password={hy2.get('obfs_password', '')}&insecure=1#{username}-Hy2{suffix}"
+            )
 
-    vless_uri = f"vless://{uuid}@{server_domain}:{reality_port}?security=reality&flow=xtls-rprx-vision&pbk={reality_pbk}&sni={reality_sni}&sid={reality_sid}&fp=chrome#{username}-Reality"
-    hy2_uri = f"hysteria2://{password}@{server_domain}:{hy2_port}/?sni={reality_sni}&obfs=salamander&obfs-password={hy2_obfs}&insecure=1#{username}-Hy2"
-
-    raw_text = f"{vless_uri}\n{hy2_uri}\n"
+    raw_text = "\n".join(uris) + "\n"
     return base64.b64encode(raw_text.encode("utf-8")).decode("utf-8") + "\n"
 
 
@@ -408,15 +454,15 @@ class SubscriptionHandler(BaseHTTPRequestHandler):
 
         # Generate response payload
         if selected_format == "clash":
-            payload = build_clash_yaml(manifest_data, target_user).encode("utf-8")
+            payload = build_clash_yaml(manifest_data, target_user, vpn_dir).encode("utf-8")
             content_type = "application/x-yaml; charset=utf-8"
             filename = "vpn-clash.yaml"
         elif selected_format == "singbox":
-            payload = build_singbox_json(manifest_data, target_user).encode("utf-8")
+            payload = build_singbox_json(manifest_data, target_user, vpn_dir).encode("utf-8")
             content_type = "application/json; charset=utf-8"
             filename = "config.json"
         else:
-            payload = build_base64_uris(manifest_data, target_user).encode("utf-8")
+            payload = build_base64_uris(manifest_data, target_user, vpn_dir).encode("utf-8")
             content_type = "text/plain; charset=utf-8"
             filename = "subscription.txt"
 
