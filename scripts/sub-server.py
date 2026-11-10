@@ -149,8 +149,7 @@ def build_singbox_json(manifest, user):
                     "tag": "dns-direct",
                     "type": "https",
                     "server": "77.88.8.8",
-                    "path": "/dns-query",
-                    "detour": "direct"
+                    "path": "/dns-query"
                 }
             ],
             "rules": [
@@ -245,7 +244,7 @@ def build_singbox_json(manifest, user):
                     "tag": "geosite-ru",
                     "type": "remote",
                     "format": "binary",
-                    "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/ru.srs",
+                    "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ru.srs",
                     "download_detour": "direct"
                 },
                 {

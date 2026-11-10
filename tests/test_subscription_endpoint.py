@@ -276,7 +276,11 @@ class TestSubscriptionEndpoint:
             dns_servers = singbox_cfg["dns"]["servers"]
             assert any(s.get("server") == "77.88.8.8" and s.get("type") == "https" for s in dns_servers), "Split DNS must include Yandex DoH (77.88.8.8)"
             assert any(s.get("server") == "1.1.1.1" and s.get("type") == "https" for s in dns_servers), "Split DNS must include remote DoH (1.1.1.1)"
+            direct_dns = [s for s in dns_servers if s.get("tag") == "dns-direct"][0]
+            assert "detour" not in direct_dns, "dns-direct must not specify redundant detour to empty direct outbound"
             assert singbox_cfg.get("route", {}).get("default_domain_resolver") == "dns-direct"
+            geosite_ru = [rs for rs in singbox_cfg.get("route", {}).get("rule_set", []) if rs.get("tag") == "geosite-ru"][0]
+            assert "category-ru.srs" in geosite_ru.get("url", ""), "geosite-ru must use valid category-ru.srs rule-set URL"
             # Split routing: geosite-ru and geoip-ru -> direct
             route = singbox_cfg.get("route", {})
             rules = route.get("rules", [])
