@@ -236,13 +236,14 @@ def node_add(ip, name=None, user="root", password=None, key_path=None, port=22, 
 
         print("[✓] Remote installation and post-flight assertions passed!")
 
+        # Sync users if present
+        run_ssh("if [[ -f /opt/vpn-installer/users.json ]]; then bash /opt/vpn-installer/scripts/user-sync.sh; fi", check=False)
+
         # 6. Retrieve remote manifest.json
         print("[+] Retrieving remote node manifest.json...")
         manifest_remote = "/opt/vpn-installer/manifest.json"
-        with io.BytesIO() as buf:
-            sftp.get(manifest_remote, buf)
-            buf.seek(0)
-            manifest_data = json.loads(buf.read().decode("utf-8"))
+        with sftp.file(manifest_remote, "r") as f:
+            manifest_data = json.load(f)
 
         sftp.close()
         ssh.close()

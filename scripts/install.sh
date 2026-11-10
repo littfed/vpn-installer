@@ -160,7 +160,7 @@ ensure_dependencies() {
         log_info "Installing Docker and Docker Compose plugin..."
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y
-            apt-get install -y ca-certificates curl gnupg qrencode jq
+            apt-get install -y ca-certificates curl gnupg qrencode jq python3-paramiko
             curl -fsSL https://get.docker.com | sh
         else
             curl -fsSL https://get.docker.com | sh
@@ -168,8 +168,8 @@ ensure_dependencies() {
     else
         if command -v apt-get >/dev/null 2>&1; then
             local missing_pkgs=""
-            for pkg in qrencode jq; do
-                if ! command -v "$pkg" >/dev/null 2>&1; then
+            for pkg in qrencode jq python3-paramiko; do
+                if ! command -v "$pkg" >/dev/null 2>&1 && ! dpkg -l "$pkg" >/dev/null 2>&1; then
                     missing_pkgs="${missing_pkgs} ${pkg}"
                 fi
             done
@@ -1165,9 +1165,14 @@ main() {
     setup_caddy_decoy
     setup_mtproto
     render_singbox_config
-    assert_step "Sing-Box Config Schema" '[[ -f "$VPN_DIR/config.json" && -s "$VPN_DIR/config.json" ]]' 'config.json missing or empty.'
-
     render_awg_config
+    if [[ -f "$VPN_DIR/users.json" && -f "$VPN_DIR/scripts/user-sync.sh" ]]; then
+        log_info "Synchronizing existing users into sing-box config..."
+        "$VPN_DIR/scripts/user-sync.sh" 2>/dev/null || true
+    elif [[ -f "$VPN_DIR/users.json" && -f "${REPO_ROOT}/scripts/user-sync.sh" ]]; then
+        "${REPO_ROOT}/scripts/user-sync.sh" 2>/dev/null || true
+    fi
+    assert_step "Sing-Box Config Schema" '[[ -f "$VPN_DIR/config.json" && -s "$VPN_DIR/config.json" ]]' 'config.json missing or empty.'
     assert_step "AmneziaWG Configuration" '[[ -f "$VPN_DIR/awg/awg0.conf" && -s "$VPN_DIR/awg/awg0.conf" ]]' 'awg0.conf missing or empty.'
 
     configure_firewall
