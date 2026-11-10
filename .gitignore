@@ -19,6 +19,10 @@ id_rsa*
 .scratch/**/secrets*
 
 # OS & Editor Files
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
 .DS_Store
 Thumbs.db
 *.tmp
