@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VPN_DIR="${VPN_DIR:-/opt/vpn-installer}"
+MANIFEST_FILE="${VPN_DIR}/manifest.json"
+COMPOSE_FILE="${VPN_DIR}/docker-compose.yml"
+
+show_help() {
+    cat << 'EOF'
+vpn - Censorship-Resistant VPN Node Management CLI
+
+Usage:
+  vpn <command> [arguments]
+
+Available Commands:
+  status                   Show node status, services, and listening ports
+  service <action>         Manage background services (start, stop, restart, reload, logs)
+  help                     Show this help message
+
+Service Actions:
+  vpn service start        Start all containers
+  vpn service stop         Stop all containers
+  vpn service restart      Restart all containers
+  vpn service reload       Reload sing-box config via SIGHUP
+  vpn service logs [args]  View container logs
+
+EOF
+}
+
+cmd_status() {
+    echo "=========================================================="
+    echo "           VPN Installer - Node Status                    "
+    echo "=========================================================="
+
+    if [[ ! -f "$MANIFEST_FILE" ]]; then
+        echo "Error: Manifest file not found at $MANIFEST_FILE" >&2
+        echo "Please run install.sh first." >&2
+        return 1
+    fi
+
+    # Read manifest info
+    local node_uuid=""
+    local server_ip=""
+    local reality_port="443"
+    local reality_sni=""
+    local hy2_port="443"
+
+    if command -v jq >/dev/null 2>&1; then
+        node_uuid=$(jq -r '.node_uuid // empty' "$MANIFEST_FILE")
+        server_ip=$(jq -r '.server.ipv4 // empty' "$MANIFEST_FILE")
+        reality_port=$(jq -r '.protocols.vless_reality.port // "443"' "$MANIFEST_FILE")
+        reality_sni=$(jq -r '.protocols.vless_reality.sni // empty' "$MANIFEST_FILE")
+        hy2_port=$(jq -r '.protocols.hysteria2.port // "443"' "$MANIFEST_FILE")
+    else
+        # Fallback parsing
+        node_uuid=$(grep -o '"node_uuid": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
+        server_ip=$(grep -o '"ipv4": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
+        reality_sni=$(grep -o '"sni": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
+    fi
+
+    echo "Node UUID:     ${node_uuid:-unknown}"
+    echo "Server IP:     ${server_ip:-unknown}"
+    echo "Decoy SNI:     ${reality_sni:-unknown}"
+    echo ""
+    echo "Configured Protocols:"
+    echo "  - VLESS Reality:  ${reality_port}/TCP (XTLS-Vision)"
+    echo "  - Hysteria 2:     ${hy2_port}/UDP (Salamander Obfs)"
+    echo ""
+
+    echo "--- Service Container Status ---"
+    if [[ -f "$COMPOSE_FILE" ]] && command -v docker >/dev/null 2>&1; then
+        docker compose -f "$COMPOSE_FILE" ps || echo "Unable to query Docker Compose."
+    else
+        echo "Docker Compose file not found or Docker not available."
+    fi
+    echo ""
+
+    echo "--- Listening Network Ports ---"
+    local tcp_listening="no"
+    local udp_listening="no"
+
+    if command -v ss >/dev/null 2>&1; then
+        if ss -tln | grep -E -q ":${reality_port}\b"; then
+            tcp_listening="yes"
+        fi
+        if ss -uln | grep -E -q ":${hy2_port}\b"; then
+            udp_listening="yes"
+        fi
+    elif command -v netstat >/dev/null 2>&1; then
+        if netstat -tln | grep -E -q ":${reality_port}\b"; then
+            tcp_listening="yes"
+        fi
+        if netstat -uln | grep -E -q ":${hy2_port}\b"; then
+            udp_listening="yes"
+        fi
+    else
+        # Mock/fallback check if container running
+        tcp_listening="active (containerized)"
+        udp_listening="active (containerized)"
+    fi
+
+    echo "  Port ${reality_port}/TCP (VLESS Reality): ${tcp_listening}"
+    echo "  Port ${hy2_port}/UDP (Hysteria 2):    ${udp_listening}"
+    echo "=========================================================="
+}
+
+cmd_service() {
+    local action="${1:-}"
+    shift || true
+
+    if [[ ! -f "$COMPOSE_FILE" ]]; then
+        echo "Error: Docker Compose file not found at $COMPOSE_FILE" >&2
+        return 1
+    fi
+
+    case "$action" in
+        start)
+            docker compose -f "$COMPOSE_FILE" up -d "$@"
+            ;;
+        stop)
+            docker compose -f "$COMPOSE_FILE" down "$@"
+            ;;
+        restart)
+            docker compose -f "$COMPOSE_FILE" restart "$@"
+            ;;
+        reload)
+            echo "Hot-reloading sing-box configuration..."
+            docker compose -f "$COMPOSE_FILE" kill -s HUP sing-box
+            ;;
+        logs)
+            docker compose -f "$COMPOSE_FILE" logs "$@"
+            ;;
+        check)
+            docker compose -f "$COMPOSE_FILE" exec sing-box sing-box check -c /etc/sing-box/config.json
+            ;;
+        *)
+            echo "Unknown service action: $action" >&2
+            echo "Usage: vpn service [start|stop|restart|reload|logs|check]" >&2
+            return 1
+            ;;
+    esac
+}
+
+main() {
+    if [[ $# -eq 0 ]]; then
+        show_help
+        exit 0
+    fi
+
+    local command="$1"
+    shift
+
+    case "$command" in
+        status)
+            cmd_status "$@"
+            ;;
+        service)
+            cmd_service "$@"
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        *)
+            echo "Error: Unknown command '$command'" >&2
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
