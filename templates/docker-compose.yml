@@ -49,3 +49,17 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  sub-server:
+    image: python:3.11-alpine
+    container_name: vpn-sub-server
+    restart: always
+    network_mode: "service:caddy"
+    volumes:
+      - .:/opt/vpn-installer:ro
+    command: ["python3", "/opt/vpn-installer/scripts/sub-server.py", "--host", "127.0.0.1", "--port", "8088", "--vpn-dir", "/opt/vpn-installer"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

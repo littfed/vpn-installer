@@ -166,10 +166,14 @@ setup_directories() {
         if [[ -f "${REPO_ROOT}/scripts/generate-warp-keys.py" ]]; then
             cp -f "${REPO_ROOT}/scripts/generate-warp-keys.py" "$VPN_DIR/scripts/generate-warp-keys.py"
         fi
+        if [[ -f "${REPO_ROOT}/scripts/sub-server.py" ]]; then
+            cp -f "${REPO_ROOT}/scripts/sub-server.py" "$VPN_DIR/scripts/sub-server.py"
+        fi
         cp -f "${REPO_ROOT}/bin/vpn" "$VPN_DIR/bin/vpn"
     fi
     chmod 755 "$VPN_DIR/scripts/user-sync.sh" 2>/dev/null || true
     chmod 755 "$VPN_DIR/scripts/generate-warp-keys.py" 2>/dev/null || true
+    chmod 755 "$VPN_DIR/scripts/sub-server.py" 2>/dev/null || true
     chmod 755 "$VPN_DIR/bin/vpn" 2>/dev/null || true
 
     # Install CLI symlink
@@ -344,6 +348,28 @@ with open(manifest_file, "w", encoding="utf-8") as f:
             log_info "Saved MTProto credentials to $manifest_file"
         fi
 
+        local has_sub=""
+        has_sub=$(run_python -c "import json; m=json.load(open('$manifest_file')); print('yes' if 'subscription' in m else 'no')" 2>/dev/null || echo "no")
+        local req_sub_enabled="false"
+        if [[ "${ENABLE_SUB_WEB:-0}" == "1" || "${VPN_ENABLE_SUB_WEB:-0}" == "1" ]]; then
+            req_sub_enabled="true"
+        fi
+        if [[ "$has_sub" != "yes" || "$req_sub_enabled" == "true" ]]; then
+            run_python -c '
+import json, sys
+manifest_file = sys.argv[1]
+sub_req = (sys.argv[2] == "true")
+with open(manifest_file, "r", encoding="utf-8") as f:
+    m = json.load(f)
+m["subscription"] = {
+    "enabled": sub_req or m.get("subscription", {}).get("enabled", False),
+    "port": 8088
+}
+with open(manifest_file, "w", encoding="utf-8") as f:
+    json.dump(m, f, indent=2)
+' "$manifest_file" "$req_sub_enabled"
+        fi
+
         log_info "Manifest verified at $manifest_file, skipping core key generation."
         return 0
     fi
@@ -476,6 +502,11 @@ except Exception:
     local mtg_secret
     mtg_secret=$(generate_mtproto_secret "$MTPROTO_DOMAIN")
 
+    local sub_enabled="false"
+    if [[ "${ENABLE_SUB_WEB:-0}" == "1" || "${VPN_ENABLE_SUB_WEB:-0}" == "1" ]]; then
+        sub_enabled="true"
+    fi
+
     cat << EOF > "$manifest_file"
 {
   "version": "1.0.0",
@@ -527,6 +558,10 @@ except Exception:
       "secret": "${mtg_secret}",
       "domain": "${MTPROTO_DOMAIN}"
     }
+  },
+  "subscription": {
+    "enabled": ${sub_enabled},
+    "port": 8088
   }
 }
 EOF
@@ -787,6 +822,15 @@ start_services() {
 }
 
 main() {
+    ENABLE_SUB_WEB="${ENABLE_SUB_WEB:-0}"
+    for arg in "$@"; do
+        case "$arg" in
+            --enable-sub-web)
+                ENABLE_SUB_WEB=1
+                ;;
+        esac
+    done
+
     log_info "Starting VPN Installer bootstrap..."
     check_root
     check_os

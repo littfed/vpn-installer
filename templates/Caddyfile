@@ -20,6 +20,7 @@
 localhost:8443, :8443 {
     tls internal
     import security_headers
+    reverse_proxy /sub/* 127.0.0.1:8088
     root * /usr/share/caddy
     file_server
 }
@@ -27,6 +28,7 @@ localhost:8443, :8443 {
 # Decoy HTTP on port 80 (serves static files and handles HTTP-01 challenges)
 :80 {
     import security_headers
+    reverse_proxy /sub/* 127.0.0.1:8088
     root * /usr/share/caddy
     file_server
 }

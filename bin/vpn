@@ -42,6 +42,7 @@ Available Commands:
   status                   Show node status, services, and listening ports
   service <action>         Manage background services (start, stop, restart, reload, logs)
   user <action> [args]     Manage users (add, list, show, suspend, enable, kick, delete)
+  system <action>          Manage system components (enable-sub, disable-sub, status)
   help                     Show this help message
 
 User Actions:
@@ -52,6 +53,11 @@ User Actions:
   vpn user enable <name>         Restore suspended user access
   vpn user kick <name>           Terminate active user connections
   vpn user delete <name> [-y]    Delete user permanently
+
+System Actions:
+  vpn system enable-sub          Enable adaptive subscription endpoint (/sub/<token>)
+  vpn system disable-sub         Disable adaptive subscription endpoint
+  vpn system status              Show subscription endpoint status
 
 Service Actions:
   vpn service start        Start all containers
@@ -289,7 +295,7 @@ new_user = {
     "password": secrets.token_urlsafe(18),
     "sub_key": base64.b64encode(secrets.token_bytes(32)).decode(),
     "tg_secret": tg_secret,
-    "sub_token": secrets.token_hex(16),
+    "sub_token": secrets.token_hex(32),
     "status": "active",
     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 }
@@ -459,13 +465,26 @@ vless_uri = f"vless://{uuid}@{server_ip}:{reality_port}?security=reality&flow=xt
 hy2_uri = f"hysteria2://{password}@{server_ip}:{hy2_port}/?sni={reality_sni}&obfs=salamander&obfs-password={hy2_obfs}&insecure=1#{username}-Hy2"
 tg_uri = f"tg://proxy?server={server_ip}&port={mtproto_port}&secret={tg_secret}#{username}"
 
+sub_token = user.get("sub_token", "")
+domain = ""
+if os.path.exists(manifest_file):
+    try:
+        with open(manifest_file, "r", encoding="utf-8") as mf:
+            m = json.load(mf)
+            domain = m.get("server", {}).get("domain") or ""
+    except Exception:
+        pass
+sub_host = domain if domain else server_ip
+sub_url = f"https://{sub_host}/sub/{sub_token}" if sub_token else ""
+
 out = {
     "name": username,
     "status": user.get("status", "active"),
     "uuid": uuid,
     "vless_uri": vless_uri,
     "hy2_uri": hy2_uri,
-    "tg_uri": tg_uri
+    "tg_uri": tg_uri,
+    "sub_url": sub_url
 }
 print(json.dumps(out))
 ' "$users_file" "$MANIFEST_FILE" "$username" 2>&1)
@@ -477,10 +496,11 @@ print(json.dumps(out))
         return 1
     fi
 
-    local vless_uri hy2_uri tg_uri user_status user_uuid
+    local vless_uri hy2_uri tg_uri user_status user_uuid sub_url
     vless_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['vless_uri'])")
     hy2_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['hy2_uri'])")
     tg_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['tg_uri'])")
+    sub_url=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin).get('sub_url', ''))")
     user_status=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['status'])")
     user_uuid=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['uuid'])")
 
@@ -490,7 +510,18 @@ print(json.dumps(out))
     echo "=========================================================="
     echo ""
 
+    if [[ -n "$sub_url" ]]; then
+        echo "--- Subscription URL ---"
+        echo "$sub_url"
+        echo ""
+    fi
+
     if [[ "$qr_mode" -eq 1 ]]; then
+        if [[ -n "$sub_url" ]]; then
+            echo "--- Subscription QR Code ---"
+            render_qr "$sub_url"
+            echo ""
+        fi
         echo "--- VLESS Reality ---"
         echo "$vless_uri"
         echo ""
@@ -907,6 +938,146 @@ cmd_user() {
     esac
 }
 
+cmd_system_enable_sub() {
+    mkdir -p "$VPN_DIR"
+    local users_file="${VPN_DIR}/users.json"
+    local manifest_file="${VPN_DIR}/manifest.json"
+
+    set +e
+    local py_res
+    py_res=$(run_python -c '
+import json, sys, os, secrets
+
+users_file = sys.argv[1]
+manifest_file = sys.argv[2]
+
+# 1. Update users.json with 32-byte hex sub_token
+if os.path.exists(users_file):
+    try:
+        with open(users_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        sys.exit(f"Error reading users.json: {e}")
+    users = data.get("users", [])
+    updated = False
+    for u in users:
+        token = u.get("sub_token", "")
+        if not token or len(token) != 64:
+            u["sub_token"] = secrets.token_hex(32)
+            updated = True
+    if updated or not users:
+        tmp_u = users_file + ".tmp." + str(os.getpid())
+        with open(tmp_u, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_u, users_file)
+
+# 2. Update manifest.json
+manifest = {}
+if os.path.exists(manifest_file):
+    try:
+        with open(manifest_file, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception:
+        pass
+
+manifest["subscription"] = {
+    "enabled": True,
+    "port": 8088
+}
+tmp_m = manifest_file + ".tmp." + str(os.getpid())
+with open(tmp_m, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2, ensure_ascii=False)
+os.replace(tmp_m, manifest_file)
+
+server_host = manifest.get("server", {}).get("domain") or manifest.get("server", {}).get("ipv4") or "127.0.0.1"
+print(server_host)
+' "$users_file" "$manifest_file" 2>&1)
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        echo "Error enabling subscription: $py_res" >&2
+        return 1
+    fi
+
+    local server_host="$py_res"
+
+    # Start or restart sub-server container if docker compose is used
+    if [[ -f "$COMPOSE_FILE" ]] && command -v docker >/dev/null 2>&1; then
+        docker compose -f "$COMPOSE_FILE" up -d sub-server 2>/dev/null || true
+    fi
+
+    echo "=========================================================="
+    echo "Adaptive Subscription Endpoint Enabled"
+    echo "=========================================================="
+    echo "Listening Port:  8088 (Proxied by Caddy)"
+    echo "Subscription Base: https://${server_host}/sub/<token>"
+    echo "Status:          Active"
+    echo "=========================================================="
+}
+
+cmd_system_disable_sub() {
+    local manifest_file="${VPN_DIR}/manifest.json"
+
+    if [[ -f "$manifest_file" ]]; then
+        run_python -c '
+import json, sys, os
+manifest_file = sys.argv[1]
+with open(manifest_file, "r", encoding="utf-8") as f:
+    manifest = json.load(f)
+if "subscription" not in manifest:
+    manifest["subscription"] = {}
+manifest["subscription"]["enabled"] = False
+tmp_m = manifest_file + ".tmp." + str(os.getpid())
+with open(tmp_m, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2, ensure_ascii=False)
+os.replace(tmp_m, manifest_file)
+' "$manifest_file" 2>/dev/null || true
+    fi
+
+    # Stop sub-server container
+    if [[ -f "$COMPOSE_FILE" ]] && command -v docker >/dev/null 2>&1; then
+        docker compose -f "$COMPOSE_FILE" stop sub-server 2>/dev/null || true
+    fi
+
+    echo "Subscription endpoint disabled."
+}
+
+cmd_system_sub_status() {
+    local manifest_file="${VPN_DIR}/manifest.json"
+    local enabled="false"
+    local port="8088"
+    if [[ -f "$manifest_file" ]]; then
+        enabled=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('subscription',{}).get('enabled', False))" 2>/dev/null || echo "false")
+        port=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('subscription',{}).get('port', 8088))" 2>/dev/null || echo "8088")
+    fi
+    echo "Subscription Endpoint Status:"
+    echo "  Enabled: $enabled"
+    echo "  Internal Port: $port"
+}
+
+cmd_system() {
+    local action="${1:-}"
+    shift || true
+
+    case "$action" in
+        enable-sub)
+            cmd_system_enable_sub "$@"
+            ;;
+        disable-sub)
+            cmd_system_disable_sub "$@"
+            ;;
+        status|sub-status)
+            cmd_system_sub_status "$@"
+            ;;
+        *)
+            echo "Error: Unknown system action '$action'." >&2
+            echo "Usage: vpn system {enable-sub|disable-sub|status}" >&2
+            return 1
+            ;;
+    esac
+}
+
 main() {
     if [[ $# -eq 0 ]]; then
         show_help
@@ -925,6 +1096,9 @@ main() {
             ;;
         user)
             cmd_user "$@"
+            ;;
+        system)
+            cmd_system "$@"
             ;;
         help|--help|-h)
             show_help
