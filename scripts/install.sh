@@ -154,13 +154,18 @@ setup_directories() {
     chmod 700 "$VPN_DIR"
 
     # Copy templates, scripts and CLI
-    cp -f "${REPO_ROOT}/templates/docker-compose.yml" "$VPN_DIR/docker-compose.yml"
-    cp -f "${REPO_ROOT}/templates/config.json.template" "$VPN_DIR/templates/config.json.template"
-    cp -f "${REPO_ROOT}/templates/docker-compose.yml" "$VPN_DIR/templates/docker-compose.yml"
-    cp -f "${REPO_ROOT}/scripts/user-sync.sh" "$VPN_DIR/scripts/user-sync.sh"
-    chmod 755 "$VPN_DIR/scripts/user-sync.sh"
-    cp -f "${REPO_ROOT}/bin/vpn" "$VPN_DIR/bin/vpn"
-    chmod 755 "$VPN_DIR/bin/vpn"
+    if [[ "$REPO_ROOT" != "$VPN_DIR" ]]; then
+        cp -f "${REPO_ROOT}/templates/docker-compose.yml" "$VPN_DIR/docker-compose.yml"
+        cp -f "${REPO_ROOT}/templates/config.json.template" "$VPN_DIR/templates/config.json.template"
+        cp -f "${REPO_ROOT}/scripts/user-sync.sh" "$VPN_DIR/scripts/user-sync.sh"
+        if [[ -f "${REPO_ROOT}/scripts/generate-warp-keys.py" ]]; then
+            cp -f "${REPO_ROOT}/scripts/generate-warp-keys.py" "$VPN_DIR/scripts/generate-warp-keys.py"
+        fi
+        cp -f "${REPO_ROOT}/bin/vpn" "$VPN_DIR/bin/vpn"
+    fi
+    chmod 755 "$VPN_DIR/scripts/user-sync.sh" 2>/dev/null || true
+    chmod 755 "$VPN_DIR/scripts/generate-warp-keys.py" 2>/dev/null || true
+    chmod 755 "$VPN_DIR/bin/vpn" 2>/dev/null || true
 
     # Install CLI symlink
     mkdir -p "$BIN_DIR"
@@ -168,10 +173,102 @@ setup_directories() {
     log_info "Installed CLI to $BIN_DIR/vpn"
 }
 
+get_warp_credentials() {
+    local warp_script="${REPO_ROOT}/scripts/generate-warp-keys.py"
+    if [[ ! -f "$warp_script" ]]; then
+        warp_script="${VPN_DIR}/scripts/generate-warp-keys.py"
+    fi
+
+    warp_priv=""
+    warp_pub=""
+    warp_peer_pub=""
+    warp_v4=""
+    warp_v6=""
+    warp_reserved=""
+    warp_server=""
+    warp_port=""
+
+    if [[ -f "$warp_script" ]]; then
+        log_info "Generating Cloudflare WARP registration and WireGuard keys..."
+        local warp_json=""
+        local warp_cmd_args=()
+        if [[ -n "${WARP_API_URL:-}" ]]; then
+            warp_cmd_args+=(--api-url "$WARP_API_URL")
+        fi
+        warp_json=$(run_python "$warp_script" "${warp_cmd_args[@]}" 2>/dev/null || true)
+        if [[ -n "$warp_json" ]]; then
+            local parsed_warp=""
+            parsed_warp=$(echo "$warp_json" | run_python -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    print(data.get("private_key", ""))
+    print(data.get("public_key", ""))
+    print(data.get("peer_public_key", "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="))
+    print(data.get("v4", "172.16.0.2/32"))
+    print(data.get("v6", "2606:4700:110:8fbb:bdf2:a2f6:a188:94d6/128"))
+    print(json.dumps(data.get("reserved", [0, 0, 0])))
+    print(data.get("server", "162.159.192.1"))
+    print(data.get("server_port", 2408))
+except Exception:
+    pass
+' 2>/dev/null || true)
+            if [[ -n "$parsed_warp" ]]; then
+                warp_priv=$(echo "$parsed_warp" | sed -n '1p')
+                warp_pub=$(echo "$parsed_warp" | sed -n '2p')
+                warp_peer_pub=$(echo "$parsed_warp" | sed -n '3p')
+                warp_v4=$(echo "$parsed_warp" | sed -n '4p')
+                warp_v6=$(echo "$parsed_warp" | sed -n '5p')
+                warp_reserved=$(echo "$parsed_warp" | sed -n '6p')
+                warp_server=$(echo "$parsed_warp" | sed -n '7p')
+                warp_port=$(echo "$parsed_warp" | sed -n '8p')
+            fi
+        fi
+    fi
+
+    warp_priv="${warp_priv:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
+    warp_pub="${warp_pub:-bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=}"
+    warp_peer_pub="${warp_peer_pub:-bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=}"
+    warp_v4="${warp_v4:-172.16.0.2/32}"
+    warp_v6="${warp_v6:-2606:4700:110:8fbb:bdf2:a2f6:a188:94d6/128}"
+    warp_reserved="${warp_reserved:-[0, 0, 0]}"
+    warp_server="${warp_server:-162.159.192.1}"
+    warp_port="${warp_port:-2408}"
+}
+
 generate_crypto_keys() {
     local manifest_file="$VPN_DIR/manifest.json"
     if [[ -f "$manifest_file" ]]; then
-        log_info "Manifest already exists at $manifest_file, skipping key generation."
+        local has_warp=""
+        has_warp=$(run_python -c "import json; m=json.load(open('$manifest_file')); print('yes' if m.get('protocols',{}).get('warp') else 'no')" 2>/dev/null || echo "no")
+        if [[ "$has_warp" == "yes" ]]; then
+            log_info "Manifest already exists at $manifest_file, skipping key generation."
+            return 0
+        fi
+        log_info "Manifest exists at $manifest_file but lacks WARP. Generating WARP credentials..."
+        local warp_priv="" warp_pub="" warp_peer_pub="" warp_v4="" warp_v6="" warp_reserved="" warp_server="" warp_port=""
+        get_warp_credentials
+        run_python -c '
+import json, sys
+manifest_file = sys.argv[1]
+with open(manifest_file, "r", encoding="utf-8") as f:
+    m = json.load(f)
+if "protocols" not in m:
+    m["protocols"] = {}
+m["protocols"]["warp"] = {
+    "enabled": True,
+    "private_key": sys.argv[2],
+    "public_key": sys.argv[3],
+    "peer_public_key": sys.argv[4],
+    "local_address": [sys.argv[5], sys.argv[6]],
+    "reserved": json.loads(sys.argv[7]),
+    "server": sys.argv[8],
+    "server_port": int(sys.argv[9])
+}
+with open(manifest_file, "w", encoding="utf-8") as f:
+    json.dump(m, f, indent=2)
+' "$manifest_file" "$warp_priv" "$warp_pub" "$warp_peer_pub" "$warp_v4" "$warp_v6" "$warp_reserved" "$warp_server" "$warp_port"
+        log_info "Saved WARP credentials to $manifest_file"
         return 0
     fi
 
@@ -276,6 +373,10 @@ except Exception:
         hy2_obfs="obfs$(date +%s%N 2>/dev/null || date +%s)"
     fi
 
+    # Cloudflare WARP Egress Keypair and Registration
+    local warp_priv="" warp_pub="" warp_peer_pub="" warp_v4="" warp_v6="" warp_reserved="" warp_server="" warp_port=""
+    get_warp_credentials
+
     # Detect public IP
     local server_ip="${SERVER_IP:-}"
     if [[ -z "$server_ip" ]]; then
@@ -316,6 +417,19 @@ except Exception:
       "port": 443,
       "password": "${hy2_pwd}",
       "obfs_password": "${hy2_obfs}"
+    },
+    "warp": {
+      "enabled": true,
+      "private_key": "${warp_priv}",
+      "public_key": "${warp_pub}",
+      "peer_public_key": "${warp_peer_pub}",
+      "local_address": [
+        "${warp_v4}",
+        "${warp_v6}"
+      ],
+      "reserved": ${warp_reserved},
+      "server": "${warp_server}",
+      "server_port": ${warp_port}
     }
   }
 }
@@ -359,12 +473,30 @@ render_singbox_config() {
     local config_sub="$VPN_DIR/config/sing-box.json"
 
     local node_uuid reality_sni priv_key short_id hy2_pwd hy2_obfs
+    local warp_priv warp_peer_pub warp_v4 warp_v6 warp_reserved warp_server warp_port
     node_uuid=$(get_json_val "node_uuid" "$manifest_file")
     reality_sni=$(get_json_val "sni" "$manifest_file")
     priv_key=$(get_json_val "private_key" "$manifest_file")
     short_id=$(get_json_val "short_id" "$manifest_file")
     hy2_pwd=$(get_json_val "password" "$manifest_file")
     hy2_obfs=$(get_json_val "obfs_password" "$manifest_file")
+
+    warp_priv=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('protocols',{}).get('warp',{}).get('private_key',''))" 2>/dev/null || true)
+    warp_peer_pub=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('protocols',{}).get('warp',{}).get('peer_public_key','bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo='))" 2>/dev/null || true)
+    warp_v4=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('protocols',{}).get('warp',{}).get('local_address',['172.16.0.2/32'])[0])" 2>/dev/null || true)
+    warp_v6=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('protocols',{}).get('warp',{}).get('local_address',['','2606:4700:110:8fbb:bdf2:a2f6:a188:94d6/128'])[1])" 2>/dev/null || true)
+    warp_reserved=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(json.dumps(m.get('protocols',{}).get('warp',{}).get('reserved',[0,0,0])))" 2>/dev/null || true)
+    warp_server=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('protocols',{}).get('warp',{}).get('server','162.159.192.1'))" 2>/dev/null || true)
+    warp_port=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('protocols',{}).get('warp',{}).get('server_port',2408))" 2>/dev/null || true)
+
+    # Fallbacks if python parsing returned empty
+    warp_priv="${warp_priv:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
+    warp_peer_pub="${warp_peer_pub:-bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=}"
+    warp_v4="${warp_v4:-172.16.0.2/32}"
+    warp_v6="${warp_v6:-2606:4700:110:8fbb:bdf2:a2f6:a188:94d6/128}"
+    warp_reserved="${warp_reserved:-[0, 0, 0]}"
+    warp_server="${warp_server:-162.159.192.1}"
+    warp_port="${warp_port:-2408}"
 
     # Substitute placeholders
     sed \
@@ -374,6 +506,13 @@ render_singbox_config() {
         -e "s|__REALITY_SHORT_ID__|${short_id}|g" \
         -e "s|__HYSTERIA2_PASSWORD__|${hy2_pwd}|g" \
         -e "s|__HYSTERIA2_OBFS_PASSWORD__|${hy2_obfs}|g" \
+        -e "s|__WARP_LOCAL_IPV4__|${warp_v4}|g" \
+        -e "s|__WARP_LOCAL_IPV6__|${warp_v6}|g" \
+        -e "s|__WARP_PRIVATE_KEY__|${warp_priv}|g" \
+        -e "s|__WARP_PEER_PUBLIC_KEY__|${warp_peer_pub}|g" \
+        -e "s|__WARP_RESERVED__|${warp_reserved}|g" \
+        -e "s|__WARP_SERVER__|${warp_server}|g" \
+        -e "s|__WARP_PORT__|${warp_port}|g" \
         "$template_file" > "$config_target"
 
     cp -f "$config_target" "$config_sub"
@@ -389,6 +528,7 @@ start_services() {
     log_info "Starting sing-box via Docker Compose..."
     cd "$VPN_DIR"
     docker compose up -d --remove-orphans
+    docker compose kill -s HUP sing-box 2>/dev/null || docker compose restart sing-box 2>/dev/null || true
 
     log_info "Verifying open ports (443/TCP & 443/UDP)..."
     sleep 2

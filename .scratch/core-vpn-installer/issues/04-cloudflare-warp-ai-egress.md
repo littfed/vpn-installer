@@ -5,13 +5,13 @@
 
 **Blocked by:** 01: Базовый инсталлер и Docker Compose с ядром Sing-box
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance criteria
 
-- [ ] Реализован автономный скрипт `scripts/generate-warp-keys.py` (или bash-эквивалент), регистрирующий учётную запись через Cloudflare API и возвращающий PrivateKey, IPv4/IPv6 адреса и 3-байтовый `reserved` client ID.
-- [ ] В `config.json` добавляется outbound типа `wireguard` с тегом `warp-out`.
-- [ ] Настроены правила маршрутизации (`route.rules`) с использованием `geosite-openai`, `geosite-anthropic`, `geosite-google`, `geosite-cursor`, направляющие трафик в `warp-out`.
-- [ ] Настроен динамический `remote rule-set` для обновления правил геолокации и доменов без перезапуска.
-- [ ] Обычный интернет-трафик продолжает выходить напрямую через `direct`, не перегружая WARP.
-- [ ] Тестовый запрос изнутри туннеля на `https://www.cloudflare.com/cdn-cgi/trace` возвращает статус `warp=on`.
+- [x] Реализован автономный скрипт `scripts/generate-warp-keys.py` (или bash-эквивалент), регистрирующий учётную запись через Cloudflare API и возвращающий PrivateKey, IPv4/IPv6 адреса и 3-байтовый `reserved` client ID.
+- [x] В `config.json` добавляется outbound типа `wireguard` с тегом `warp-out`.
+- [x] Настроены правила маршрутизации (`route.rules`) с использованием `geosite-openai`, `geosite-anthropic`, `geosite-google`, `geosite-cursor`, направляющие трафик в `warp-out`.
+- [x] Настроен динамический `remote rule-set` для обновления правил геолокации и доменов без перезапуска.
+- [x] Обычный интернет-трафик продолжает выходить напрямую через `direct`, не перегружая WARP.
+- [x] Тестовый запрос изнутри туннеля на `https://www.cloudflare.com/cdn-cgi/trace` возвращает статус `warp=on`.

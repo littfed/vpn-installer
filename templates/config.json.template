@@ -19,6 +19,12 @@
   },
   "inbounds": [
     {
+      "type": "mixed",
+      "tag": "local-mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 2080
+    },
+    {
       "type": "vless",
       "tag": "vless-reality-in",
       "listen": "::",
@@ -73,6 +79,30 @@
       }
     }
   ],
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "warp-out",
+      "address": [
+        "__WARP_LOCAL_IPV4__",
+        "__WARP_LOCAL_IPV6__"
+      ],
+      "private_key": "__WARP_PRIVATE_KEY__",
+      "peers": [
+        {
+          "address": "__WARP_SERVER__",
+          "port": __WARP_PORT__,
+          "public_key": "__WARP_PEER_PUBLIC_KEY__",
+          "allowed_ips": [
+            "0.0.0.0/0",
+            "::/0"
+          ],
+          "reserved": __WARP_RESERVED__
+        }
+      ],
+      "mtu": 1280
+    }
+  ],
   "outbounds": [
     {
       "type": "direct",
@@ -85,6 +115,36 @@
   ],
   "route": {
     "default_domain_resolver": "dns-direct",
+    "rule_set": [
+      {
+        "tag": "geosite-openai",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/openai.srs",
+        "download_detour": "direct"
+      },
+      {
+        "tag": "geosite-anthropic",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/anthropic.srs",
+        "download_detour": "direct"
+      },
+      {
+        "tag": "geosite-google",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/google.srs",
+        "download_detour": "direct"
+      },
+      {
+        "tag": "geosite-cursor",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/cursor.srs",
+        "download_detour": "direct"
+      }
+    ],
     "rules": [
       {
         "action": "sniff"
@@ -92,6 +152,25 @@
       {
         "protocol": "dns",
         "action": "hijack-dns"
+      },
+      {
+        "domain": [
+          "cloudflare.com",
+          "www.cloudflare.com"
+        ],
+        "domain_suffix": [
+          ".cloudflare.com"
+        ],
+        "outbound": "warp-out"
+      },
+      {
+        "rule_set": [
+          "geosite-openai",
+          "geosite-anthropic",
+          "geosite-google",
+          "geosite-cursor"
+        ],
+        "outbound": "warp-out"
       },
       {
         "ip_is_private": true,
