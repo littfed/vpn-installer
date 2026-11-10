@@ -1,0 +1,27 @@
+# Environment & Secrets (NEVER COMMIT)
+.env
+.env.*
+*.env
+*.secret
+*.secrets
+.secrets/
+secrets/
+*.local
+*.local.*
+test-servers*
+inventory.local*
+*.key
+*.pem
+id_rsa*
+
+# Local Scratch Credentials
+.scratch/**/credentials*
+.scratch/**/secrets*
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+.idea/
+.vscode/
