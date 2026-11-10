@@ -62,6 +62,12 @@ teardown_firewall() {
         while iptables -t nat -C PREROUTING -p udp --dport 20000:30000 -j REDIRECT --to-ports 443 2>/dev/null; do
             iptables -t nat -D PREROUTING -p udp --dport 20000:30000 -j REDIRECT --to-ports 443 2>/dev/null || break
         done
+        while iptables -t nat -C POSTROUTING -s 10.8.0.0/16 -j MASQUERADE 2>/dev/null; do
+            iptables -t nat -D POSTROUTING -s 10.8.0.0/16 -j MASQUERADE 2>/dev/null || break
+        done
+        while iptables -t nat -C POSTROUTING -s 10.8.0.0/24 -j MASQUERADE 2>/dev/null; do
+            iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -j MASQUERADE 2>/dev/null || break
+        done
     fi
 
     if command -v ip6tables >/dev/null 2>&1; then
@@ -123,15 +129,20 @@ setup_firewall() {
         fi
     fi
 
-    # 3. NAT MASQUERADE for AmneziaWG (10.8.0.0/24)
+    # 3. Enable IP forwarding and NAT MASQUERADE for AmneziaWG (10.8.0.0/16)
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+
     if command -v iptables >/dev/null 2>&1; then
         local def_if
         def_if=$(ip route 2>/dev/null | grep -E '^default' | awk '{print $5}' | head -n1 || true)
         if [[ -z "$def_if" ]]; then
             def_if="eth0"
         fi
-        if ! iptables -t nat -C POSTROUTING -s 10.8.0.0/24 -o "$def_if" -j MASQUERADE 2>/dev/null; then
-            iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o "$def_if" -j MASQUERADE 2>/dev/null || true
+        while iptables -t nat -C POSTROUTING -s 10.8.0.0/24 -o "$def_if" -j MASQUERADE 2>/dev/null; do
+            iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o "$def_if" -j MASQUERADE 2>/dev/null || break
+        done
+        if ! iptables -t nat -C POSTROUTING -s 10.8.0.0/16 -o "$def_if" -j MASQUERADE 2>/dev/null; then
+            iptables -t nat -A POSTROUTING -s 10.8.0.0/16 -o "$def_if" -j MASQUERADE 2>/dev/null || true
         fi
     fi
 

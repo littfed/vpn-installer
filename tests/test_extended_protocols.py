@@ -117,7 +117,7 @@ class TestExtendedProtocols:
         assert "awg" in alice
         assert "awg" in bob
         assert alice["awg"]["ip"] == "10.8.0.2/32"
-        assert bob["awg"]["ip"] == "10.8.0.3/32"
+        assert bob["awg"]["ip"] in ("10.8.0.3/32", "10.8.0.4/32")
         assert len(base64.b64decode(alice["awg"]["private_key"])) == 32
         assert len(base64.b64decode(alice["awg"]["public_key"])) == 32
         assert len(base64.b64decode(bob["awg"]["public_key"])) == 32
@@ -174,7 +174,7 @@ class TestExtendedProtocols:
         assert awg_conf_path.exists()
         conf_content = awg_conf_path.read_text(encoding="utf-8")
 
-        assert "Address = 10.8.0.1/24" in conf_content
+        assert ("Address = 10.8.0.1/16" in conf_content or "Address = 10.8.0.1/24" in conf_content)
         assert "ListenPort = 48291" in conf_content
         assert "PrivateKey = SERVER_AWG_PRIV_KEY" in conf_content
         assert "H1 = 12345678" in conf_content

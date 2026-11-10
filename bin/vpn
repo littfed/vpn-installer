@@ -42,7 +42,7 @@ Usage:
 Available Commands:
   status                   Show node status, services, and listening ports
   service <action>         Manage background services (start, stop, restart, reload, logs)
-  user <action> [args]     Manage users (add, list, show, suspend, enable, kick, delete)
+  user <action> [args]     Manage users (add, list, show, suspend, enable, kick, delete, device)
   system <action>          Manage system components (enable-sub, disable-sub, status, harden)
   backup [file]            Create backup archive (.tar.gz) of node configurations
   restore <archive>        Restore node configuration from backup archive
@@ -56,13 +56,17 @@ Probe Actions:
                            Run synthetic audit from Russia against foreign nodes
 
 User Actions:
-  vpn user add <name>            Add a new user
+  vpn user add <name>            Add a new user (with device-1 and device-2)
   vpn user list                  List all users
-  vpn user show <name> [--qr]    Show user connection URIs and QR codes
+  vpn user show <name> [--device <name>] [--qr]
+                                 Show user connection URIs and QR codes
   vpn user suspend <name>        Suspend user access without deleting keys
   vpn user enable <name>         Restore suspended user access
   vpn user kick <name>           Terminate active user connections
   vpn user delete <name> [-y]    Delete user permanently
+  vpn user device add <u <d>     Add a new AmneziaWG device for user
+  vpn user device del <u <d>     Delete AmneziaWG device from user
+  vpn user device list <user>    List all devices for user
 
 System Actions:
   vpn system enable-sub          Enable adaptive subscription endpoint (/sub/<token>)
@@ -378,27 +382,47 @@ def gen_curve25519():
         pub_bytes = x25519_mult(bytes(priv_bytes), base_pt)
         return (base64.b64encode(bytes(priv_bytes)).decode(), base64.b64encode(pub_bytes).decode())
 
-def allocate_awg_ip(users_list):
+def allocate_awg_ip(users_list, subnet_prefix="10.8"):
     used = set()
     for u in users_list:
-        awg = u.get("awg")
-        if isinstance(awg, dict) and awg.get("ip"):
-            used.add(awg["ip"].split("/")[0])
-    for i in range(2, 255):
-        cand = f"10.8.0.{i}"
-        if cand not in used:
-            return f"{cand}/32"
-    return "10.8.0.254/32"
+        if "awg" in u and isinstance(u["awg"], dict) and u["awg"].get("ip"):
+            used.add(u["awg"]["ip"].split("/")[0])
+        for dev in u.get("devices", {}).values():
+            if isinstance(dev, dict) and dev.get("ip"):
+                used.add(dev["ip"].split("/")[0])
+    for b3 in range(0, 256):
+        start_b4 = 2 if b3 == 0 else 1
+        for b4 in range(start_b4, 255):
+            cand = f"{subnet_prefix}.{b3}.{b4}"
+            if cand not in used:
+                return f"{cand}/32"
+    return f"{subnet_prefix}.255.254/32"
 
-# Migrate any existing users missing awg block
+# Migrate any existing users missing awg block or devices
 for u in users:
-    if "awg" not in u:
+    devs = u.setdefault("devices", {})
+    if "awg" in u and isinstance(u["awg"], dict) and u["awg"].get("private_key"):
+        if "device-1" not in devs:
+            devs["device-1"] = {
+                "private_key": u["awg"]["private_key"],
+                "public_key": u["awg"].get("public_key", ""),
+                "ip": u["awg"].get("ip") or allocate_awg_ip(users)
+            }
+    elif "device-1" not in devs:
         k_priv, k_pub = gen_curve25519()
-        u["awg"] = {
+        devs["device-1"] = {
             "private_key": k_priv,
             "public_key": k_pub,
             "ip": allocate_awg_ip(users)
         }
+    if "device-2" not in devs:
+        k_priv2, k_pub2 = gen_curve25519()
+        devs["device-2"] = {
+            "private_key": k_priv2,
+            "public_key": k_pub2,
+            "ip": allocate_awg_ip(users)
+        }
+    u["awg"] = devs["device-1"]
 
 tg_secret = ""
 if manifest_file and os.path.exists(manifest_file):
@@ -413,8 +437,22 @@ if not tg_secret:
     dom_hex = "www.cloudflare.com".encode("utf-8").hex()
     tg_secret = f"ee{secrets.token_hex(16)}{dom_hex}"
 
-awg_priv, awg_pub = gen_curve25519()
-awg_ip = allocate_awg_ip(users)
+awg_priv1, awg_pub1 = gen_curve25519()
+awg_ip1 = allocate_awg_ip(users)
+dev1 = {
+    "private_key": awg_priv1,
+    "public_key": awg_pub1,
+    "ip": awg_ip1
+}
+
+temp_user = {"devices": {"device-1": dev1}}
+awg_priv2, awg_pub2 = gen_curve25519()
+awg_ip2 = allocate_awg_ip(users + [temp_user])
+dev2 = {
+    "private_key": awg_priv2,
+    "public_key": awg_pub2,
+    "ip": awg_ip2
+}
 
 new_user = {
     "name": username,
@@ -423,10 +461,10 @@ new_user = {
     "sub_key": base64.b64encode(secrets.token_bytes(32)).decode(),
     "tg_secret": tg_secret,
     "sub_token": secrets.token_hex(32),
-    "awg": {
-        "private_key": awg_priv,
-        "public_key": awg_pub,
-        "ip": awg_ip
+    "awg": dev1,
+    "devices": {
+        "device-1": dev1,
+        "device-2": dev2
     },
     "status": "active",
     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -498,12 +536,17 @@ for u in users:
 cmd_user_show() {
     local username=""
     local qr_mode=0
+    local device_name=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --qr|-q)
                 qr_mode=1
                 shift
+                ;;
+            --device|-d)
+                device_name="${2:-}"
+                shift 2 || shift
                 ;;
             *)
                 if [[ -z "$username" ]]; then
@@ -516,7 +559,7 @@ cmd_user_show() {
 
     if [[ -z "$username" ]]; then
         echo "Error: Username is required." >&2
-        echo "Usage: vpn user show <name> [--qr]" >&2
+        echo "Usage: vpn user show <name> [--device <device>] [--qr]" >&2
         return 1
     fi
 
@@ -534,6 +577,7 @@ import json, sys, os, secrets, base64
 users_file = sys.argv[1]
 manifest_file = sys.argv[2]
 username = sys.argv[3]
+req_device = sys.argv[4] if len(sys.argv) > 4 else ""
 
 if not os.path.exists(users_file):
     sys.exit(f"Error: User \"{username}\" not found.")
@@ -555,6 +599,7 @@ reality_pbk = ""
 reality_sid = ""
 hy2_port = "443"
 hy2_obfs = ""
+hy2_pin = ""
 mtproto_port = "8443"
 mtproto_secret = ""
 
@@ -631,86 +676,110 @@ if tuic_proto and tuic_proto.get("enabled", True):
 
 awg_conf = ""
 awg_proto = m.get("protocols", {}).get("amneziawg", {}) if "m" in locals() and m else {}
-user_awg = user.get("awg")
-
-if not user_awg:
-    def gen_curve25519_local():
-        try:
-            from cryptography.hazmat.primitives.asymmetric import x25519
-            priv = x25519.X25519PrivateKey.generate()
-            pub = priv.public_key()
-            return (
-                base64.b64encode(priv.private_bytes_raw()).decode(),
-                base64.b64encode(pub.public_bytes_raw()).decode()
-            )
-        except Exception:
-            P = 2**255 - 19
-            A24 = 121665
-            def x25519_mult(s_bytes, u_bytes):
-                s = int.from_bytes(s_bytes, "little") & ~7
-                s &= ~(128 << 248)
-                s |= 64 << 248
-                u = int.from_bytes(u_bytes, "little") % P
-                x1, x2, z2, x3, z3 = u, 1, 0, u, 1
-                swap = 0
-                for t in reversed(range(255)):
-                    kt = (s >> t) & 1
-                    swap ^= kt
-                    if swap:
-                        x2, x3 = x3, x2
-                        z2, z3 = z3, z2
-                    swap = kt
-                    A = (x2 + z2) % P
-                    AA = (A * A) % P
-                    B = (x2 - z2) % P
-                    BB = (B * B) % P
-                    E = (AA - BB) % P
-                    C = (x3 + z3) % P
-                    D = (x3 - z3) % P
-                    DA = (D * A) % P
-                    CB = (C * B) % P
-                    x3 = pow(DA + CB, 2, P)
-                    z3 = (x1 * pow(DA - CB, 2, P)) % P
-                    x2 = (AA * BB) % P
-                    z2 = (E * (AA + A24 * E)) % P
+def gen_curve25519_local():
+    try:
+        from cryptography.hazmat.primitives.asymmetric import x25519
+        priv = x25519.X25519PrivateKey.generate()
+        pub = priv.public_key()
+        return (
+            base64.b64encode(priv.private_bytes_raw()).decode(),
+            base64.b64encode(pub.public_bytes_raw()).decode()
+        )
+    except Exception:
+        P = 2**255 - 19
+        A24 = 121665
+        def x25519_mult(s_bytes, u_bytes):
+            s = int.from_bytes(s_bytes, "little") & ~7
+            s &= ~(128 << 248)
+            s |= 64 << 248
+            u = int.from_bytes(u_bytes, "little") % P
+            x1, x2, z2, x3, z3 = u, 1, 0, u, 1
+            swap = 0
+            for t in reversed(range(255)):
+                kt = (s >> t) & 1
+                swap ^= kt
                 if swap:
                     x2, x3 = x3, x2
                     z2, z3 = z3, z2
-                return (x2 * pow(z2, P - 2, P) % P).to_bytes(32, "little")
-            priv_bytes = bytearray(secrets.token_bytes(32))
-            priv_bytes[0] &= 248
-            priv_bytes[31] &= 127
-            priv_bytes[31] |= 64
-            base_pt = (9).to_bytes(32, "little")
-            pub_bytes = x25519_mult(bytes(priv_bytes), base_pt)
-            return (base64.b64encode(bytes(priv_bytes)).decode(), base64.b64encode(pub_bytes).decode())
+                swap = kt
+                A = (x2 + z2) % P
+                AA = (A * A) % P
+                B = (x2 - z2) % P
+                BB = (B * B) % P
+                E = (AA - BB) % P
+                C = (x3 + z3) % P
+                D = (x3 - z3) % P
+                DA = (D * A) % P
+                CB = (C * B) % P
+                x3 = pow(DA + CB, 2, P)
+                z3 = (x1 * pow(DA - CB, 2, P)) % P
+                x2 = (AA * BB) % P
+                z2 = (E * (AA + A24 * E)) % P
+            if swap:
+                x2, x3 = x3, x2
+                z2, z3 = z3, z2
+            return (x2 * pow(z2, P - 2, P) % P).to_bytes(32, "little")
+        priv_bytes = bytearray(secrets.token_bytes(32))
+        priv_bytes[0] &= 248
+        priv_bytes[31] &= 127
+        priv_bytes[31] |= 64
+        base_pt = (9).to_bytes(32, "little")
+        pub_bytes = x25519_mult(bytes(priv_bytes), base_pt)
+        return (base64.b64encode(bytes(priv_bytes)).decode(), base64.b64encode(pub_bytes).decode())
 
-    used_ips = set()
-    for u in data.get("users", []):
-        if "awg" in u and isinstance(u["awg"], dict) and "ip" in u["awg"]:
-            ip_str = u["awg"]["ip"].split("/")[0]
-            try:
-                used_ips.add(int(ip_str.split(".")[-1]))
-            except Exception:
-                pass
-    next_ip = 2
-    while next_ip in used_ips and next_ip <= 254:
-        next_ip += 1
-    
-    priv_k, pub_k = gen_curve25519_local()
-    user_awg = {
-        "private_key": priv_k,
-        "public_key": pub_k,
-        "ip": f"10.8.0.{next_ip}/32"
-    }
-    user["awg"] = user_awg
-    try:
-        tmp_u = users_file + ".tmp." + str(os.getpid())
-        with open(tmp_u, "w", encoding="utf-8") as uf:
-            json.dump(data, uf, indent=2, ensure_ascii=False)
-        os.replace(tmp_u, users_file)
-    except Exception:
-        pass
+def allocate_awg_ip_local(users_list, subnet_prefix="10.8"):
+    used = set()
+    for u in users_list:
+        if "awg" in u and isinstance(u["awg"], dict) and u["awg"].get("ip"):
+            used.add(u["awg"]["ip"].split("/")[0])
+        for dev in u.get("devices", {}).values():
+            if isinstance(dev, dict) and dev.get("ip"):
+                used.add(dev["ip"].split("/")[0])
+    for b3 in range(0, 256):
+        start_b4 = 2 if b3 == 0 else 1
+        for b4 in range(start_b4, 255):
+            cand = f"{subnet_prefix}.{b3}.{b4}"
+            if cand not in used:
+                return f"{cand}/32"
+    return f"{subnet_prefix}.255.254/32"
+
+devices = user.setdefault("devices", {})
+if "awg" in user and isinstance(user["awg"], dict) and user["awg"].get("private_key"):
+    if "device-1" not in devices:
+        devices["device-1"] = {
+            "private_key": user["awg"]["private_key"],
+            "public_key": user["awg"].get("public_key", ""),
+            "ip": user["awg"].get("ip", "10.8.0.2/32")
+        }
+
+if "device-1" not in devices:
+    priv1, pub1 = gen_curve25519_local()
+    ip1 = allocate_awg_ip_local(data.get("users", []))
+    devices["device-1"] = {"private_key": priv1, "public_key": pub1, "ip": ip1}
+
+if "device-2" not in devices:
+    priv2, pub2 = gen_curve25519_local()
+    ip2 = allocate_awg_ip_local(data.get("users", []))
+    devices["device-2"] = {"private_key": priv2, "public_key": pub2, "ip": ip2}
+
+user["awg"] = devices["device-1"]
+
+try:
+    tmp_u = users_file + ".tmp." + str(os.getpid())
+    with open(tmp_u, "w", encoding="utf-8") as uf:
+        json.dump(data, uf, indent=2, ensure_ascii=False)
+    os.replace(tmp_u, users_file)
+except Exception:
+    pass
+
+if req_device:
+    if req_device not in devices:
+        sys.exit(f"Error: Device \"{req_device}\" not found for user \"{username}\". Available devices: {list(devices.keys())}")
+    selected_device = req_device
+    user_awg = devices[req_device]
+else:
+    selected_device = "device-1"
+    user_awg = devices.get("device-1") or next(iter(devices.values()))
 
 if awg_proto and user_awg and user_awg.get("private_key"):
     awg_port = str(awg_proto.get("port", "48291"))
@@ -755,10 +824,12 @@ out = {
     "tuic_uri": tuic_uri,
     "tg_uri": tg_uri,
     "sub_url": sub_url,
-    "awg_conf": awg_conf
+    "awg_conf": awg_conf,
+    "selected_device": selected_device,
+    "devices": {k: {"ip": v.get("ip", ""), "public_key": v.get("public_key", "")} for k, v in devices.items()}
 }
 print(json.dumps(out))
-' "$users_file" "$MANIFEST_FILE" "$username" 2>&1)
+' "$users_file" "$MANIFEST_FILE" "$username" "$device_name" 2>&1)
     local py_exit=$?
     set -e
 
@@ -767,7 +838,7 @@ print(json.dumps(out))
         return 1
     fi
 
-    local vless_uri hy2_uri tuic_uri tg_uri user_status user_uuid sub_url awg_conf
+    local vless_uri hy2_uri tuic_uri tg_uri user_status user_uuid sub_url awg_conf selected_device devices_summary
     vless_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['vless_uri'])")
     hy2_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['hy2_uri'])")
     tuic_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin).get('tuic_uri', ''))")
@@ -776,6 +847,8 @@ print(json.dumps(out))
     user_status=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['status'])")
     user_uuid=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['uuid'])")
     awg_conf=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin).get('awg_conf', ''))")
+    selected_device=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin).get('selected_device', 'device-1'))")
+    devices_summary=$(echo "$py_output" | run_python -c "import json, sys; d = json.load(sys.stdin).get('devices', {}); print(', '.join([f'{k} ({v.get(\"ip\", \"\")})' for k, v in d.items()]))")
 
     echo "=========================================================="
     echo "User:   $username ($user_status)"
@@ -786,6 +859,13 @@ print(json.dumps(out))
     if [[ -n "$sub_url" ]]; then
         echo "--- Subscription URL ---"
         echo "$sub_url"
+        echo ""
+    fi
+
+    if [[ -n "$devices_summary" ]]; then
+        echo "--- AmneziaWG Devices ---"
+        echo "Registered: $devices_summary"
+        echo "Active view: $selected_device"
         echo ""
     fi
 
@@ -822,10 +902,10 @@ print(json.dumps(out))
         render_qr "$tg_uri"
         echo ""
         if [[ -n "$awg_conf" ]]; then
-            echo "--- AmneziaWG (.conf) ---"
+            echo "--- AmneziaWG (.conf) [$selected_device] ---"
             echo "$awg_conf"
             echo ""
-            echo "--- AmneziaWG QR Code ---"
+            echo "--- AmneziaWG QR Code [$selected_device] ---"
             render_qr "$awg_conf"
             echo ""
         fi
@@ -845,13 +925,315 @@ print(json.dumps(out))
         echo "$tg_uri"
         echo ""
         if [[ -n "$awg_conf" ]]; then
-            echo "--- AmneziaWG (.conf) ---"
+            echo "--- AmneziaWG (.conf) [$selected_device] ---"
             echo "$awg_conf"
             echo ""
         fi
-        echo "(Tip: Run 'vpn user show $username --qr' to display terminal QR codes)"
+        echo "(Tip: Run 'vpn user show $username --device <name> --qr' to display terminal QR codes)"
     fi
     echo "=========================================================="
+}
+
+cmd_user_device_add() {
+    local username="${1:-}"
+    local devicename="${2:-}"
+
+    if [[ -z "$username" || -z "$devicename" ]]; then
+        echo "Error: Username and device name are required." >&2
+        echo "Usage: vpn user device add <user> <device>" >&2
+        return 1
+    fi
+
+    local users_file="${VPN_DIR}/users.json"
+    if [[ ! -f "$users_file" ]]; then
+        echo "Error: User '$username' not found." >&2
+        return 1
+    fi
+
+    set +e
+    local py_res
+    py_res=$(run_python -c '
+import json, sys, os, secrets, base64
+
+users_file = sys.argv[1]
+username = sys.argv[2]
+devicename = sys.argv[3]
+
+if not os.path.exists(users_file):
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+try:
+    with open(users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as e:
+    sys.exit(f"Error reading users.json: {e}")
+
+users = data.get("users", [])
+user = next((u for u in users if u.get("name") == username), None)
+if not user:
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+devices = user.setdefault("devices", {})
+if devicename in devices:
+    sys.exit(f"Error: Device \"{devicename}\" already exists for user \"{username}\".")
+
+def gen_curve25519_local():
+    try:
+        from cryptography.hazmat.primitives.asymmetric import x25519
+        priv = x25519.X25519PrivateKey.generate()
+        pub = priv.public_key()
+        return (
+            base64.b64encode(priv.private_bytes_raw()).decode(),
+            base64.b64encode(pub.public_bytes_raw()).decode()
+        )
+    except Exception:
+        P = 2**255 - 19
+        A24 = 121665
+        def x25519_mult(s_bytes, u_bytes):
+            s = int.from_bytes(s_bytes, "little") & ~7
+            s &= ~(128 << 248)
+            s |= 64 << 248
+            u = int.from_bytes(u_bytes, "little") % P
+            x1, x2, z2, x3, z3 = u, 1, 0, u, 1
+            swap = 0
+            for t in reversed(range(255)):
+                kt = (s >> t) & 1
+                swap ^= kt
+                if swap:
+                    x2, x3 = x3, x2
+                    z2, z3 = z3, z2
+                swap = kt
+                A = (x2 + z2) % P
+                AA = (A * A) % P
+                B = (x2 - z2) % P
+                BB = (B * B) % P
+                E = (AA - BB) % P
+                C = (x3 + z3) % P
+                D = (x3 - z3) % P
+                DA = (D * A) % P
+                CB = (C * B) % P
+                x3 = pow(DA + CB, 2, P)
+                z3 = (x1 * pow(DA - CB, 2, P)) % P
+                x2 = (AA * BB) % P
+                z2 = (E * (AA + A24 * E)) % P
+            if swap:
+                x2, x3 = x3, x2
+                z2, z3 = z3, z2
+            return (x2 * pow(z2, P - 2, P) % P).to_bytes(32, "little")
+        priv_bytes = bytearray(secrets.token_bytes(32))
+        priv_bytes[0] &= 248
+        priv_bytes[31] &= 127
+        priv_bytes[31] |= 64
+        base_pt = (9).to_bytes(32, "little")
+        pub_bytes = x25519_mult(bytes(priv_bytes), base_pt)
+        return (base64.b64encode(bytes(priv_bytes)).decode(), base64.b64encode(pub_bytes).decode())
+
+def allocate_awg_ip_local(users_list, subnet_prefix="10.8"):
+    used = set()
+    for u in users_list:
+        if "awg" in u and isinstance(u["awg"], dict) and u["awg"].get("ip"):
+            used.add(u["awg"]["ip"].split("/")[0])
+        for dev in u.get("devices", {}).values():
+            if isinstance(dev, dict) and dev.get("ip"):
+                used.add(dev["ip"].split("/")[0])
+    for b3 in range(0, 256):
+        start_b4 = 2 if b3 == 0 else 1
+        for b4 in range(start_b4, 255):
+            cand = f"{subnet_prefix}.{b3}.{b4}"
+            if cand not in used:
+                return f"{cand}/32"
+    return f"{subnet_prefix}.255.254/32"
+
+priv, pub = gen_curve25519_local()
+ip = allocate_awg_ip_local(users)
+
+devices[devicename] = {
+    "private_key": priv,
+    "public_key": pub,
+    "ip": ip
+}
+
+if "awg" not in user or not user["awg"]:
+    user["awg"] = devices[devicename]
+
+tmp_u = users_file + ".tmp." + str(os.getpid())
+with open(tmp_u, "w", encoding="utf-8") as uf:
+    json.dump(data, uf, indent=2, ensure_ascii=False)
+os.replace(tmp_u, users_file)
+
+print(json.dumps({"ip": ip, "public_key": pub}))
+' "$users_file" "$username" "$devicename" 2>&1)
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        echo "$py_res" >&2
+        return 1
+    fi
+
+    local dev_ip dev_pub
+    dev_ip=$(echo "$py_res" | run_python -c "import json, sys; print(json.load(sys.stdin)['ip'])")
+    dev_pub=$(echo "$py_res" | run_python -c "import json, sys; print(json.load(sys.stdin)['public_key'])")
+
+    trigger_sync
+    echo "Device '$devicename' successfully added for user '$username'."
+    echo "Allocated IP: $dev_ip"
+    echo "Public Key:   $dev_pub"
+}
+
+cmd_user_device_del() {
+    local username="${1:-}"
+    local devicename="${2:-}"
+
+    if [[ -z "$username" || -z "$devicename" ]]; then
+        echo "Error: Username and device name are required." >&2
+        echo "Usage: vpn user device del <user> <device>" >&2
+        return 1
+    fi
+
+    local users_file="${VPN_DIR}/users.json"
+    if [[ ! -f "$users_file" ]]; then
+        echo "Error: User '$username' not found." >&2
+        return 1
+    fi
+
+    set +e
+    local py_res
+    py_res=$(run_python -c '
+import json, sys, os
+
+users_file = sys.argv[1]
+username = sys.argv[2]
+devicename = sys.argv[3]
+
+if not os.path.exists(users_file):
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+try:
+    with open(users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as e:
+    sys.exit(f"Error reading users.json: {e}")
+
+users = data.get("users", [])
+user = next((u for u in users if u.get("name") == username), None)
+if not user:
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+devices = user.get("devices", {})
+if devicename not in devices:
+    sys.exit(f"Error: Device \"{devicename}\" not found for user \"{username}\".")
+
+del devices[devicename]
+
+if devices:
+    user["awg"] = next(iter(devices.values()))
+else:
+    user.pop("awg", None)
+
+tmp_u = users_file + ".tmp." + str(os.getpid())
+with open(tmp_u, "w", encoding="utf-8") as uf:
+    json.dump(data, uf, indent=2, ensure_ascii=False)
+os.replace(tmp_u, users_file)
+print("ok")
+' "$users_file" "$username" "$devicename" 2>&1)
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        echo "$py_res" >&2
+        return 1
+    fi
+
+    trigger_sync
+    echo "Device '$devicename' successfully removed from user '$username'."
+}
+
+cmd_user_device_list() {
+    local username="${1:-}"
+
+    if [[ -z "$username" ]]; then
+        echo "Error: Username is required." >&2
+        echo "Usage: vpn user device list <user>" >&2
+        return 1
+    fi
+
+    local users_file="${VPN_DIR}/users.json"
+    if [[ ! -f "$users_file" ]]; then
+        echo "Error: User '$username' not found." >&2
+        return 1
+    fi
+
+    set +e
+    local py_res
+    py_res=$(run_python -c '
+import json, sys, os
+
+users_file = sys.argv[1]
+username = sys.argv[2]
+
+if not os.path.exists(users_file):
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+try:
+    with open(users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as e:
+    sys.exit(f"Error reading users.json: {e}")
+
+users = data.get("users", [])
+user = next((u for u in users if u.get("name") == username), None)
+if not user:
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+devices = user.get("devices", {})
+if not devices and "awg" in user:
+    devices = {"device-1": user["awg"]}
+
+print(json.dumps(devices))
+' "$users_file" "$username" 2>&1)
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        echo "$py_res" >&2
+        return 1
+    fi
+
+    echo "Devices for user '$username':"
+    printf "%-16s %-18s %s\n" "DEVICE" "IP ADDRESS" "PUBLIC KEY"
+    printf "%-16s %-18s %s\n" "------" "----------" "----------"
+
+    echo "$py_res" | run_python -c '
+import json, sys
+data = json.load(sys.stdin)
+for dev, info in data.items():
+    ip = info.get("ip", "")
+    pub = info.get("public_key", "")
+    print(f"{dev:<16} {ip:<18} {pub}")
+'
+}
+
+cmd_user_device() {
+    local subaction="${1:-}"
+    shift || true
+
+    case "$subaction" in
+        add)
+            cmd_user_device_add "$@"
+            ;;
+        del|delete|rm)
+            cmd_user_device_del "$@"
+            ;;
+        list|ls)
+            cmd_user_device_list "$@"
+            ;;
+        *)
+            echo "Unknown device action: $subaction" >&2
+            echo "Usage: vpn user device [add|del|list] <user> [device]" >&2
+            return 1
+            ;;
+    esac
 }
 
 cmd_user_suspend() {
@@ -1229,9 +1611,12 @@ cmd_user() {
         delete)
             cmd_user_delete "$@"
             ;;
+        device)
+            cmd_user_device "$@"
+            ;;
         *)
             echo "Unknown user action: $action" >&2
-            echo "Usage: vpn user [add|list|show|suspend|enable|kick|delete]" >&2
+            echo "Usage: vpn user [add|list|show|suspend|enable|kick|delete|device]" >&2
             return 1
             ;;
     esac

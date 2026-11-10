@@ -944,7 +944,7 @@ awg_h4 = awg.get("h4", 456789)
 
 lines = [
     "[Interface]",
-    "Address = 10.8.0.1/24",
+    "Address = 10.8.0.1/16",
     f"ListenPort = {awg_port}",
     f"PrivateKey = {awg_priv}",
     f"Jc = {awg_jc}",
@@ -968,16 +968,21 @@ if os.path.exists(uf):
         pass
 
 for u in users:
-    if u.get("status") == "active" and u.get("awg"):
-        u_awg = u["awg"]
-        u_name = u.get("name", "unknown")
-        u_pub = u_awg.get("public_key", "")
-        u_ip = u_awg.get("ip", "10.8.0.2/32")
-        lines.append("[Peer]")
-        lines.append(f"# User: {u_name}")
-        lines.append(f"PublicKey = {u_pub}")
-        lines.append(f"AllowedIPs = {u_ip}")
-        lines.append("")
+    if u.get("status") != "active":
+        continue
+    u_name = u.get("name", "unknown")
+    devs = u.get("devices", {})
+    if not devs and u.get("awg"):
+        devs = {"device-1": u["awg"]}
+    for dev_name, dev_info in devs.items():
+        dev_pub = dev_info.get("public_key", "")
+        dev_ip = dev_info.get("ip", "10.8.0.2/32")
+        if dev_pub:
+            lines.append("[Peer]")
+            lines.append(f"# User: {u_name} (device: {dev_name})")
+            lines.append(f"PublicKey = {dev_pub}")
+            lines.append(f"AllowedIPs = {dev_ip}")
+            lines.append("")
 
 with open(out, "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
