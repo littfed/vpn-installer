@@ -15,12 +15,28 @@ import json
 import os
 import re
 import sys
+import hashlib
 from http import HTTPStatus
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 
+def get_cert_sha256(vpn_dir=None):
+    if not vpn_dir:
+        return ""
+    cert_path = os.path.join(vpn_dir, "certs", "fullchain.pem")
+    if os.path.isfile(cert_path):
+        try:
+            with open(cert_path, "r", encoding="utf-8") as cf:
+                b64 = "".join([line.strip() for line in cf if not line.startswith("-----")])
+                return hashlib.sha256(base64.b64decode(b64)).hexdigest().lower()
+        except Exception:
+            pass
+    return ""
+
+
 def get_nodes(manifest, vpn_dir=None):
+    nodes = None
     if vpn_dir:
         nodes_file = os.path.join(vpn_dir, "nodes.json")
         if os.path.isfile(nodes_file):
@@ -28,23 +44,34 @@ def get_nodes(manifest, vpn_dir=None):
                 with open(nodes_file, "r", encoding="utf-8") as nf:
                     data = json.load(nf)
                     if data.get("nodes"):
-                        return data["nodes"]
+                        nodes = data["nodes"]
             except Exception:
                 pass
-    if manifest.get("nodes"):
-        return manifest["nodes"]
-    server_domain = (
-        manifest.get("server", {}).get("domain")
-        or manifest.get("server", {}).get("ipv4")
-        or "127.0.0.1"
-    )
-    return [
-        {
-            "name": server_domain,
-            "server": server_domain,
-            "protocols": manifest.get("protocols", {})
-        }
-    ]
+    if nodes is None:
+        if manifest.get("nodes"):
+            nodes = manifest["nodes"]
+        else:
+            server_domain = (
+                manifest.get("server", {}).get("domain")
+                or manifest.get("server", {}).get("ipv4")
+                or "127.0.0.1"
+            )
+            nodes = [
+                {
+                    "name": server_domain,
+                    "server": server_domain,
+                    "protocols": manifest.get("protocols", {})
+                }
+            ]
+
+    local_pin = get_cert_sha256(vpn_dir)
+    if local_pin:
+        for node in nodes:
+            hy2 = node.setdefault("protocols", {}).setdefault("hysteria2", {})
+            if not hy2.get("pin_sha256"):
+                hy2["pin_sha256"] = local_pin
+
+    return nodes
 
 
 def build_clash_yaml(manifest, user, vpn_dir=None):
@@ -83,13 +110,15 @@ def build_clash_yaml(manifest, user, vpn_dir=None):
         if hy2.get("enabled", True):
             hy2_name = f"{node_name} - Hysteria2" if len(nodes) > 1 else "Hysteria2"
             proxy_names.append(hy2_name)
+            hy2_pin = hy2.get("pin_sha256") or hy2.get("pinned_peer_cert_sha256") or ""
+            fingerprint_line = f"\n    fingerprint: \"{hy2_pin}\"" if hy2_pin else ""
             proxies_list.append(f"""  - name: "{hy2_name}"
     type: hysteria2
     server: {host}
     port: {hy2.get("port", 443)}
     password: {password}
     sni: {hy2.get("sni", vless.get("sni", "gateway.icloud.com"))}
-    skip-cert-verify: true
+    skip-cert-verify: true{fingerprint_line}
     obfs: salamander
     obfs-password: {hy2.get("obfs_password", "")}""")
 
@@ -359,8 +388,13 @@ def build_base64_uris(manifest, user, vpn_dir=None):
                 f"vless://{uuid}@{host}:{vless.get('port', 443)}?security=reality&flow=xtls-rprx-vision&pbk={vless.get('public_key', '')}&sni={vless.get('sni', 'gateway.icloud.com')}&sid={vless.get('short_id', '')}&fp=chrome#{username}-Reality{suffix}"
             )
         if hy2.get("enabled", True):
+            hy2_pin = hy2.get("pin_sha256") or hy2.get("pinned_peer_cert_sha256") or ""
+            if hy2_pin:
+                tls_pin_params = f"&pinSHA256={hy2_pin}&pinnedPeerCertSha256={hy2_pin}"
+            else:
+                tls_pin_params = "&insecure=1"
             uris.append(
-                f"hysteria2://{password}@{host}:{hy2.get('port', 443)}/?sni={hy2.get('sni', vless.get('sni', 'gateway.icloud.com'))}&obfs=salamander&obfs-password={hy2.get('obfs_password', '')}&insecure=1#{username}-Hy2{suffix}"
+                f"hysteria2://{password}@{host}:{hy2.get('port', 443)}/?sni={hy2.get('sni', vless.get('sni', 'gateway.icloud.com'))}&obfs=salamander&obfs-password={hy2.get('obfs_password', '')}{tls_pin_params}#{username}-Hy2{suffix}"
             )
 
     raw_text = "\n".join(uris) + "\n"

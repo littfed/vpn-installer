@@ -371,7 +371,8 @@ class TestSubscriptionEndpoint:
                             "hysteria2": {
                                 "enabled": True,
                                 "port": 443,
-                                "obfs_password": "nl_obfs_password_1"
+                                "obfs_password": "nl_obfs_password_1",
+                                "pin_sha256": "111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000"
                             }
                         }
                     },
@@ -389,7 +390,8 @@ class TestSubscriptionEndpoint:
                             "hysteria2": {
                                 "enabled": True,
                                 "port": 8443,
-                                "obfs_password": "de_obfs_password_2"
+                                "obfs_password": "de_obfs_password_2",
+                                "pin_sha256": "22223333444455556666777788889999aaaabbbbccccddddeeeeffff00001111"
                             }
                         }
                     }
@@ -428,6 +430,7 @@ class TestSubscriptionEndpoint:
             assert "DE-Exit-2 - Hysteria2" in clash_body
             assert "198.51.100.1" in clash_body
             assert "203.0.113.2" in clash_body
+            assert 'fingerprint: "111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000"' in clash_body
 
             # 2. Sing-box Multi-Node
             status, singbox_body = fetch(f"/sub/{token}?format=singbox")
@@ -464,6 +467,9 @@ class TestSubscriptionEndpoint:
             assert "#tester-Hy2-DE-Exit-2" in raw_uris
             assert "198.51.100.1:443" in raw_uris
             assert "203.0.113.2:8443" in raw_uris
+            assert "pinSHA256=111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000" in raw_uris
+            assert "pinnedPeerCertSha256=111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000" in raw_uris
+            assert "insecure=1" not in raw_uris
 
         finally:
             proc.terminate()

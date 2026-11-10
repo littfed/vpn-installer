@@ -598,6 +598,24 @@ setup_tls_certificates() {
     else
         touch "$key_file" "$cert_file"
     fi
+
+    local cert_fingerprint=""
+    if [[ -f "$cert_file" ]] && command -v openssl >/dev/null 2>&1; then
+        cert_fingerprint=$(openssl x509 -in "$cert_file" -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//;s/://g' | tr '[:upper:]' '[:lower:]' | tr -d ' \r\n')
+    fi
+    if [[ -n "$cert_fingerprint" && -f "$VPN_DIR/manifest.json" ]]; then
+        run_python -c "
+import json
+try:
+    with open('$VPN_DIR/manifest.json', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    data.setdefault('protocols', {}).setdefault('hysteria2', {})['pin_sha256'] = '$cert_fingerprint'
+    with open('$VPN_DIR/manifest.json', 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+except Exception:
+    pass
+" 2>/dev/null || true
+    fi
 }
 
 setup_caddy_decoy() {

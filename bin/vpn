@@ -453,6 +453,17 @@ if os.path.exists(manifest_file):
             hy2 = m.get("protocols", {}).get("hysteria2", {})
             hy2_port = str(hy2.get("port", "443"))
             hy2_obfs = hy2.get("obfs_password", "")
+            hy2_pin = hy2.get("pin_sha256", "")
+            if not hy2_pin:
+                cert_file = os.path.join(vpn_dir, "certs", "fullchain.pem")
+                if os.path.exists(cert_file):
+                    try:
+                        import base64, hashlib
+                        with open(cert_file, "r", encoding="utf-8") as cf:
+                            b64 = "".join([l.strip() for l in cf if not l.startswith("-----")])
+                            hy2_pin = hashlib.sha256(base64.b64decode(b64)).hexdigest().lower()
+                    except Exception:
+                        pass
 
             mtp = m.get("protocols", {}).get("mtproto", {})
             mtproto_port = str(mtp.get("port", "8443"))
@@ -474,7 +485,10 @@ if not tg_secret:
     tg_secret = f"ee000102030405060708090a0b0c0d0e0f{dom_hex}"
 
 vless_uri = f"vless://{uuid}@{server_ip}:{reality_port}?security=reality&flow=xtls-rprx-vision&pbk={reality_pbk}&sni={reality_sni}&sid={reality_sid}&fp=chrome#{username}-Reality"
-hy2_uri = f"hysteria2://{password}@{server_ip}:{hy2_port}/?sni={reality_sni}&obfs=salamander&obfs-password={hy2_obfs}&insecure=1#{username}-Hy2"
+if hy2_pin:
+    hy2_uri = f"hysteria2://{password}@{server_ip}:{hy2_port}/?sni={reality_sni}&obfs=salamander&obfs-password={hy2_obfs}&pinSHA256={hy2_pin}&pinnedPeerCertSha256={hy2_pin}#{username}-Hy2"
+else:
+    hy2_uri = f"hysteria2://{password}@{server_ip}:{hy2_port}/?sni={reality_sni}&obfs=salamander&obfs-password={hy2_obfs}&insecure=1#{username}-Hy2"
 tg_uri = f"tg://proxy?server={server_ip}&port={mtproto_port}&secret={tg_secret}#{username}"
 
 sub_token = user.get("sub_token", "")
