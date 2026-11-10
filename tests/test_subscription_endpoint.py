@@ -281,6 +281,11 @@ class TestSubscriptionEndpoint:
             assert tun_inbounds[0].get("strict_route") is False, "TUN must use strict_route: false to prevent Windows WFP socket deadlocks"
             assert any(ib.get("type") == "mixed" for ib in singbox_cfg["inbounds"]), "Must provide mixed inbound for system proxy"
             assert singbox_cfg.get("route", {}).get("default_domain_resolver") == "dns-direct"
+            assert singbox_cfg.get("route", {}).get("default_http_client") == "direct-client"
+            assert any(hc.get("tag") == "direct-client" for hc in singbox_cfg.get("http_clients", []))
+            assert not any("download_detour" in rs for rs in singbox_cfg.get("route", {}).get("rule_set", [])), (
+                "download_detour is deprecated in 1.14 and removed in 1.16; must use http_clients"
+            )
             geosite_ru = [rs for rs in singbox_cfg.get("route", {}).get("rule_set", []) if rs.get("tag") == "geosite-ru"][0]
             assert "category-ru.srs" in geosite_ru.get("url", ""), "geosite-ru must use valid category-ru.srs rule-set URL"
             # Split routing: geosite-ru and geoip-ru -> direct

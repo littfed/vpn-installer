@@ -230,29 +230,32 @@ def build_singbox_json(manifest, user):
                 "tag": "block"
             }
         ],
+        "http_clients": [
+            {
+                "tag": "direct-client"
+            }
+        ],
         "route": {
             "default_domain_resolver": "dns-direct",
+            "default_http_client": "direct-client",
             "rule_set": [
                 {
                     "tag": "geosite-category-ads-all",
                     "type": "remote",
                     "format": "binary",
-                    "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ads-all.srs",
-                    "download_detour": "direct"
+                    "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ads-all.srs"
                 },
                 {
                     "tag": "geosite-ru",
                     "type": "remote",
                     "format": "binary",
-                    "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ru.srs",
-                    "download_detour": "direct"
+                    "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ru.srs"
                 },
                 {
                     "tag": "geoip-ru",
                     "type": "remote",
                     "format": "binary",
-                    "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/ru.srs",
-                    "download_detour": "direct"
+                    "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/ru.srs"
                 }
             ],
             "rules": [
