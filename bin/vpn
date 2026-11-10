@@ -47,8 +47,13 @@ Available Commands:
   backup [file]            Create backup archive (.tar.gz) of node configurations
   restore <archive>        Restore node configuration from backup archive
   test-leak                Run diagnostic audit for IP, DNS, WebRTC, and WARP leaks
+  probe [args]             Run Canary Probe synthetic audit from Russia against nodes
   uninstall [--force]      Uninstall node containers, firewall rules, and CLI
   help                     Show this help message
+
+Probe Actions:
+  vpn probe [--node <name>] [--protocol <vless|hy2|mtproto>] [--json]
+                           Run synthetic audit from Russia against foreign nodes
 
 User Actions:
   vpn user add <name>            Add a new user
@@ -1418,6 +1423,35 @@ cmd_uninstall() {
     fi
 }
 
+cmd_probe() {
+    local probe_script=""
+    if [[ -f "${VPN_DIR}/scripts/canary-probe.py" ]]; then
+        probe_script="${VPN_DIR}/scripts/canary-probe.py"
+    elif [[ -f "${SCRIPT_DIR}/../scripts/canary-probe.py" ]]; then
+        probe_script="${SCRIPT_DIR}/../scripts/canary-probe.py"
+    elif [[ -f "${REPO_ROOT}/scripts/canary-probe.py" ]]; then
+        probe_script="${REPO_ROOT}/scripts/canary-probe.py"
+    fi
+
+    if [[ -z "$probe_script" || ! -f "$probe_script" ]]; then
+        echo "Error: canary-probe.py not found." >&2
+        return 1
+    fi
+
+    local nodes_file="${VPN_DIR}/nodes.json"
+    if [[ ! -f "$nodes_file" && -f "${VPN_DIR}/manifest.json" ]]; then
+        nodes_file="${VPN_DIR}/manifest.json"
+    elif [[ ! -f "$nodes_file" && -f "nodes.json" ]]; then
+        nodes_file="nodes.json"
+    fi
+
+    run_python "$probe_script" \
+        --nodes-file "$nodes_file" \
+        --health-file "${VPN_DIR}/node-health.json" \
+        --users-file "${VPN_DIR}/users.json" \
+        "$@"
+}
+
 main() {
     if [[ $# -eq 0 ]]; then
         show_help
@@ -1448,6 +1482,19 @@ main() {
             ;;
         test-leak)
             cmd_test_leak "$@"
+            ;;
+        probe)
+            cmd_probe "$@"
+            ;;
+        node)
+            local subcmd="${1:-}"
+            if [[ "$subcmd" == "test" || "$subcmd" == "check" || "$subcmd" == "probe" ]]; then
+                shift
+                cmd_probe "$@"
+            else
+                echo "Usage: vpn node <test|check|probe> [args]" >&2
+                return 1
+            fi
             ;;
         uninstall)
             cmd_uninstall "$@"

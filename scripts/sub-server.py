@@ -35,6 +35,19 @@ def get_cert_sha256(vpn_dir=None):
     return ""
 
 
+def load_node_health(vpn_dir=None):
+    if not vpn_dir:
+        return {}
+    health_file = os.path.join(vpn_dir, "node-health.json")
+    if os.path.isfile(health_file):
+        try:
+            with open(health_file, "r", encoding="utf-8") as hf:
+                return json.load(hf)
+        except Exception:
+            pass
+    return {}
+
+
 def get_nodes(manifest, vpn_dir=None):
     nodes = None
     if vpn_dir:
@@ -79,9 +92,13 @@ def build_clash_yaml(manifest, user, vpn_dir=None):
     uuid = user.get("uuid", "")
     password = user.get("password", "")
     nodes = get_nodes(manifest, vpn_dir)
+    health_data = load_node_health(vpn_dir)
+    nodes_health = health_data.get("nodes", {})
 
     proxies_list = []
     proxy_names = []
+    healthy_names = []
+    degraded_names = []
 
     for idx, node in enumerate(nodes):
         node_name = node.get("name", f"Node-{idx+1}")
@@ -89,9 +106,17 @@ def build_clash_yaml(manifest, user, vpn_dir=None):
         vless = node.get("protocols", {}).get("vless_reality", {})
         hy2 = node.get("protocols", {}).get("hysteria2", {})
 
+        nh = nodes_health.get(node_name, {}).get("protocols", {})
+        vless_status = nh.get("vless_reality", {}).get("status", "healthy")
+        hy2_status = nh.get("hysteria2", {}).get("status", "healthy")
+
         if vless.get("enabled", True) and vless.get("public_key"):
             vless_name = f"{node_name} - Reality" if len(nodes) > 1 else "VLESS-Reality"
             proxy_names.append(vless_name)
+            if vless_status == "healthy":
+                healthy_names.append(vless_name)
+            else:
+                degraded_names.append(vless_name)
             proxies_list.append(f"""  - name: "{vless_name}"
     type: vless
     server: {host}
@@ -110,6 +135,10 @@ def build_clash_yaml(manifest, user, vpn_dir=None):
         if hy2.get("enabled", True):
             hy2_name = f"{node_name} - Hysteria2" if len(nodes) > 1 else "Hysteria2"
             proxy_names.append(hy2_name)
+            if hy2_status == "healthy":
+                healthy_names.append(hy2_name)
+            else:
+                degraded_names.append(hy2_name)
             hy2_pin = hy2.get("pin_sha256") or hy2.get("pinned_peer_cert_sha256") or ""
             fingerprint_line = f"\n    fingerprint: \"{hy2_pin}\"" if hy2_pin else ""
             proxies_list.append(f"""  - name: "{hy2_name}"
@@ -123,7 +152,14 @@ def build_clash_yaml(manifest, user, vpn_dir=None):
     obfs-password: {hy2.get("obfs_password", "")}""")
 
     proxies_yaml = "\n\n".join(proxies_list)
-    proxies_entries = "\n".join([f'      - "{p}"' for p in proxy_names])
+
+    # Active pool excludes degraded/offline if any healthy node exists
+    active_pool = healthy_names if healthy_names else proxy_names
+    fallback_pool = healthy_names + degraded_names if healthy_names else proxy_names
+
+    auto_entries = "\n".join([f'      - "{p}"' for p in active_pool])
+    fallback_entries = "\n".join([f'      - "{p}"' for p in fallback_pool])
+    select_entries = "\n".join([f'      - "{p}"' for p in fallback_pool])
 
     yaml_text = f"""# vpn-installer adaptive subscription - Clash.Meta / Mihomo
 port: 7890
@@ -143,21 +179,21 @@ proxy-groups:
     interval: 300
     tolerance: 50
     proxies:
-{proxies_entries}
+{auto_entries}
 
   - name: "FALLBACK"
     type: fallback
     url: "https://www.gstatic.com/generate_204"
     interval: 300
     proxies:
-{proxies_entries}
+{fallback_entries}
 
   - name: "PROXY"
     type: select
     proxies:
       - "AUTO-FASTEST"
       - "FALLBACK"
-{proxies_entries}
+{select_entries}
 
 rules:
   - GEOIP,private,DIRECT,no-resolve
@@ -173,9 +209,13 @@ def build_singbox_json(manifest, user, vpn_dir=None):
     uuid = user.get("uuid", "")
     password = user.get("password", "")
     nodes = get_nodes(manifest, vpn_dir)
+    health_data = load_node_health(vpn_dir)
+    nodes_health = health_data.get("nodes", {})
 
     outbounds = []
     proxy_tags = []
+    healthy_tags = []
+    degraded_tags = []
 
     for idx, node in enumerate(nodes):
         node_name = node.get("name", f"Node-{idx+1}")
@@ -183,9 +223,17 @@ def build_singbox_json(manifest, user, vpn_dir=None):
         vless = node.get("protocols", {}).get("vless_reality", {})
         hy2 = node.get("protocols", {}).get("hysteria2", {})
 
+        nh = nodes_health.get(node_name, {}).get("protocols", {})
+        vless_status = nh.get("vless_reality", {}).get("status", "healthy")
+        hy2_status = nh.get("hysteria2", {}).get("status", "healthy")
+
         if vless.get("enabled", True) and vless.get("public_key"):
             vless_tag = f"{node_name}-Reality" if len(nodes) > 1 else "vless-proxy"
             proxy_tags.append(vless_tag)
+            if vless_status == "healthy":
+                healthy_tags.append(vless_tag)
+            else:
+                degraded_tags.append(vless_tag)
             outbounds.append({
                 "type": "vless",
                 "tag": vless_tag,
@@ -211,6 +259,10 @@ def build_singbox_json(manifest, user, vpn_dir=None):
         if hy2.get("enabled", True):
             hy2_tag = f"{node_name}-Hy2" if len(nodes) > 1 else "hy2-proxy"
             proxy_tags.append(hy2_tag)
+            if hy2_status == "healthy":
+                healthy_tags.append(hy2_tag)
+            else:
+                degraded_tags.append(hy2_tag)
             outbounds.append({
                 "type": "hysteria2",
                 "tag": hy2_tag,
@@ -229,10 +281,12 @@ def build_singbox_json(manifest, user, vpn_dir=None):
             })
 
     if len(proxy_tags) > 1:
+        active_tags = healthy_tags if healthy_tags else proxy_tags
+        selector_tags = healthy_tags + degraded_tags if healthy_tags else proxy_tags
         outbounds.append({
             "type": "urltest",
             "tag": "proxy-auto",
-            "outbounds": list(proxy_tags),
+            "outbounds": list(active_tags),
             "url": "https://www.gstatic.com/generate_204",
             "interval": "5m",
             "tolerance": 50
@@ -240,7 +294,7 @@ def build_singbox_json(manifest, user, vpn_dir=None):
         outbounds.append({
             "type": "selector",
             "tag": "proxy",
-            "outbounds": ["proxy-auto"] + list(proxy_tags),
+            "outbounds": ["proxy-auto"] + list(selector_tags),
             "default": "proxy-auto"
         })
         final_proxy = "proxy"
@@ -373,6 +427,8 @@ def build_base64_uris(manifest, user, vpn_dir=None):
     uuid = user.get("uuid", "")
     password = user.get("password", "")
     nodes = get_nodes(manifest, vpn_dir)
+    health_data = load_node_health(vpn_dir)
+    nodes_health = health_data.get("nodes", {})
 
     uris = []
     for idx, node in enumerate(nodes):
@@ -381,11 +437,17 @@ def build_base64_uris(manifest, user, vpn_dir=None):
         vless = node.get("protocols", {}).get("vless_reality", {})
         hy2 = node.get("protocols", {}).get("hysteria2", {})
 
+        nh = nodes_health.get(node_name, {}).get("protocols", {})
+        vless_status = nh.get("vless_reality", {}).get("status", "healthy")
+        hy2_status = nh.get("hysteria2", {}).get("status", "healthy")
+
         suffix = f"-{node_name}" if len(nodes) > 1 else ""
+        vless_flag = "-DEGRADED" if vless_status == "degraded" else ""
+        hy2_flag = "-DEGRADED" if hy2_status == "degraded" else ""
 
         if vless.get("enabled", True) and vless.get("public_key"):
             uris.append(
-                f"vless://{uuid}@{host}:{vless.get('port', 443)}?security=reality&flow=xtls-rprx-vision&pbk={vless.get('public_key', '')}&sni={vless.get('sni', 'gateway.icloud.com')}&sid={vless.get('short_id', '')}&fp=chrome#{username}-Reality{suffix}"
+                f"vless://{uuid}@{host}:{vless.get('port', 443)}?security=reality&flow=xtls-rprx-vision&pbk={vless.get('public_key', '')}&sni={vless.get('sni', 'gateway.icloud.com')}&sid={vless.get('short_id', '')}&fp=chrome#{username}-Reality{suffix}{vless_flag}"
             )
         if hy2.get("enabled", True):
             hy2_pin = hy2.get("pin_sha256") or hy2.get("pinned_peer_cert_sha256") or ""
@@ -394,7 +456,7 @@ def build_base64_uris(manifest, user, vpn_dir=None):
             else:
                 tls_pin_params = "&insecure=1"
             uris.append(
-                f"hysteria2://{password}@{host}:{hy2.get('port', 443)}/?sni={hy2.get('sni', vless.get('sni', 'gateway.icloud.com'))}&obfs=salamander&obfs-password={hy2.get('obfs_password', '')}{tls_pin_params}#{username}-Hy2{suffix}"
+                f"hysteria2://{password}@{host}:{hy2.get('port', 443)}/?sni={hy2.get('sni', vless.get('sni', 'gateway.icloud.com'))}&obfs=salamander&obfs-password={hy2.get('obfs_password', '')}{tls_pin_params}#{username}-Hy2{suffix}{hy2_flag}"
             )
 
     raw_text = "\n".join(uris) + "\n"

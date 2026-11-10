@@ -5,18 +5,18 @@
 
 **Blocked by:** none
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance criteria
 
-- [ ] Скрипт принимает аргументы `--nodes-file <path>`, `--health-file <path>`, `--timeout <sec>`, `--dry-run`.
-- [ ] Для протокола VLESS Reality генерируется минимальный временный клиентский конфиг `sing-box` с outbound VLESS Reality и inbound `mixed` на случайном свободном loopback-порту.
-- [ ] Для протокола Hysteria 2 генерируется клиентский конфиг `sing-box` с outbound Hysteria 2 с поддержкой `pinSHA256` / `pinnedPeerCertSha256` (или `insecure: true` в зависимости от наличия отпечатка).
-- [ ] Для MTProto Proxy выполняется тест TCP-соединения на целевой порт (8443) и валидация отклика.
-- [ ] Через поднятый `mixed/socks5` порт выполняются 3 сквозных HTTP-запроса:
+- [x] Скрипт принимает аргументы `--nodes-file <path>`, `--health-file <path>`, `--timeout <sec>`, `--dry-run`.
+- [x] Для протокола VLESS Reality генерируется минимальный временный клиентский конфиг `sing-box` с outbound VLESS Reality и inbound `mixed` на случайном свободном loopback-порту.
+- [x] Для протокола Hysteria 2 генерируется клиентский конфиг `sing-box` с outbound Hysteria 2 с поддержкой `pinSHA256` / `pinnedPeerCertSha256` (или `insecure: true` в зависимости от наличия отпечатка).
+- [x] Для MTProto Proxy выполняется тест TCP-соединения на целевой порт (8443) и валидация отклика.
+- [x] Через поднятый `mixed/socks5` порт выполняются 3 сквозных HTTP-запроса:
   1. `https://cp.cloudflare.com/generate_204` — фиксация времени отклика (RTT в мс).
   2. `https://www.youtube.com` или `https://www.instagram.com` — подтверждение обхода блокировок ТСПУ (код 200/301/302).
   3. `https://api.openai.com` — подтверждение чистоты IP и работоспособности WARP egress ноды.
-- [ ] Временный процесс `sing-box` корректно завершается (SIGTERM, затем SIGKILL при необходимости), а временные файлы конфигов удаляются.
-- [ ] Время тестирования одного протокола ограничено таймаутом (по умолчанию 5 секунд на запрос).
-- [ ] Скрипт возвращает структурированный JSON с результатами: `node`, `protocol`, `latency_ms`, `tspu_bypass_ok`, `warp_ok`, `success`.
+- [x] Временный процесс `sing-box` корректно завершается (SIGTERM, затем SIGKILL при необходимости), а временные файлы конфигов удаляются.
+- [x] Время тестирования одного протокола ограничено таймаутом (по умолчанию 5 секунд на запрос).
+- [x] Скрипт возвращает структурированный JSON с результатами: `node`, `protocol`, `latency_ms`, `tspu_bypass_ok`, `warp_ok`, `success`.

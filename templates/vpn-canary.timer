@@ -1,0 +1,12 @@
+[Unit]
+Description=Run VPN Canary Probe every 7 minutes with jitter
+After=network-online.target
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=7min
+RandomizedDelaySec=60s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -5,18 +5,18 @@
 
 **Blocked by:** 02: Реестр здоровья нод и логика Circuit Breaker
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance criteria
 
-- [ ] В `scripts/sub-server.py` добавлена функция `load_node_health(vpn_dir)`, считывающая `/opt/vpn-installer/node-health.json` (с graceful fallback при его отсутствии).
-- [ ] **Clash.Meta / Mihomo YAML:**
+- [x] В `scripts/sub-server.py` добавлена функция `load_node_health(vpn_dir)`, считывающая `/opt/vpn-installer/node-health.json` (с graceful fallback при его отсутствии).
+- [x] **Clash.Meta / Mihomo YAML:**
   - Протоколы и ноды со статусом `degraded` или `offline` исключаются из группы выбора `AUTO-FASTEST` (`url-test`).
   - Если протокол деградировал, но нода доступна по другому протоколу, деградировавший протокол помещается только в группу `FALLBACK` (резерв) либо полностью исключается.
   - Если все протоколы здоровы, формируется стандартный полный список прокси.
-- [ ] **Sing-box JSON:**
+- [x] **Sing-box JSON:**
   - Исходящие подключения (`outbounds`), помеченные как `degraded` или `offline`, исключаются из группы авто-тестирования `proxy-auto` (`urltest`).
   - При наличии хотя бы одного активного узла селектор `proxy` направляет трафик на живые узлы.
-- [ ] **Base64 URI List:**
+- [x] **Base64 URI List:**
   - Если протокол помечен как `offline`, соответствующий URI не включается в выдачу (или снабжается тегом `#<name>-DEGRADED`).
-- [ ] Сервер подписок `sub-server.py` развернут локально на сервере управления в РФ (`127.0.0.1:8088`), за проксирующим веб-сервером с Let's Encrypt SSL-сертификатом.
+- [x] Сервер подписок `sub-server.py` развернут локально на сервере управления в РФ (`127.0.0.1:8088`), за проксирующим веб-сервером с Let's Encrypt SSL-сертификатом.

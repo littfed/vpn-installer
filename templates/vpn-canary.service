@@ -1,0 +1,14 @@
+[Unit]
+Description=VPN Canary Probe - Synthetic Health Check from Russia
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /opt/vpn-installer/scripts/canary-probe.py --nodes-file /opt/vpn-installer/nodes.json --health-file /opt/vpn-installer/node-health.json --quiet
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
