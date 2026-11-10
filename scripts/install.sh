@@ -8,6 +8,8 @@ VPN_DIR="${VPN_DIR:-/opt/vpn-installer}"
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 OS_RELEASE_FILE="${OS_RELEASE_FILE:-/etc/os-release}"
 SINGBOX_IMAGE="${SINGBOX_IMAGE:-ghcr.io/sagernet/sing-box:latest}"
+MTG_IMAGE="${MTG_IMAGE:-nineseconds/mtg:2}"
+MTPROTO_DOMAIN="${MTPROTO_DOMAIN:-www.cloudflare.com}"
 
 SKIP_ROOT_CHECK="${SKIP_ROOT_CHECK:-0}"
 FORCE_NON_ROOT="${FORCE_NON_ROOT:-0}"
@@ -239,6 +241,29 @@ except Exception:
     warp_port="${warp_port:-2408}"
 }
 
+generate_mtproto_secret() {
+    local domain="${1:-$MTPROTO_DOMAIN}"
+    local secret=""
+    if command -v docker >/dev/null 2>&1; then
+        secret=$(docker run --rm "$MTG_IMAGE" generate-secret --hex "$domain" 2>/dev/null || true)
+    fi
+    if [[ -z "$secret" ]]; then
+        secret=$(run_python -c '
+import secrets, sys
+domain = sys.argv[1]
+domain_hex = domain.encode("utf-8").hex()
+print(f"ee{secrets.token_hex(16)}{domain_hex}")
+' "$domain" 2>/dev/null || true)
+    fi
+    if [[ -z "$secret" ]]; then
+        local rand_hex dom_hex
+        rand_hex=$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \r\n' || echo "000102030405060708090a0b0c0d0e0f")
+        dom_hex=$(printf "%s" "$domain" | od -An -tx1 2>/dev/null | tr -d ' \r\n' || echo "7777772e636c6f7564666c6172652e636f6d")
+        secret="ee${rand_hex}${dom_hex}"
+    fi
+    echo "$secret"
+}
+
 generate_crypto_keys() {
     local manifest_file="$VPN_DIR/manifest.json"
     local vpn_domain="${VPN_DOMAIN:-${SERVER_DOMAIN:-}}"
@@ -267,14 +292,11 @@ except Exception:
         fi
         local has_warp=""
         has_warp=$(run_python -c "import json; m=json.load(open('$manifest_file')); print('yes' if m.get('protocols',{}).get('warp') else 'no')" 2>/dev/null || echo "no")
-        if [[ "$has_warp" == "yes" ]]; then
-            log_info "Manifest already exists at $manifest_file, skipping key generation."
-            return 0
-        fi
-        log_info "Manifest exists at $manifest_file but lacks WARP. Generating WARP credentials..."
-        local warp_priv="" warp_pub="" warp_peer_pub="" warp_v4="" warp_v6="" warp_reserved="" warp_server="" warp_port=""
-        get_warp_credentials
-        run_python -c '
+        if [[ "$has_warp" != "yes" ]]; then
+            log_info "Manifest exists at $manifest_file but lacks WARP. Generating WARP credentials..."
+            local warp_priv="" warp_pub="" warp_peer_pub="" warp_v4="" warp_v6="" warp_reserved="" warp_server="" warp_port=""
+            get_warp_credentials
+            run_python -c '
 import json, sys
 manifest_file = sys.argv[1]
 with open(manifest_file, "r", encoding="utf-8") as f:
@@ -294,7 +316,35 @@ m["protocols"]["warp"] = {
 with open(manifest_file, "w", encoding="utf-8") as f:
     json.dump(m, f, indent=2)
 ' "$manifest_file" "$warp_priv" "$warp_pub" "$warp_peer_pub" "$warp_v4" "$warp_v6" "$warp_reserved" "$warp_server" "$warp_port"
-        log_info "Saved WARP credentials to $manifest_file"
+            log_info "Saved WARP credentials to $manifest_file"
+        fi
+
+        local has_mtproto=""
+        has_mtproto=$(run_python -c "import json; m=json.load(open('$manifest_file')); print('yes' if m.get('protocols',{}).get('mtproto') else 'no')" 2>/dev/null || echo "no")
+        if [[ "$has_mtproto" != "yes" ]]; then
+            log_info "Manifest lacks MTProto. Generating MTProto Fake-TLS secret..."
+            local mtg_secret
+            mtg_secret=$(generate_mtproto_secret "$MTPROTO_DOMAIN")
+            run_python -c '
+import json, sys
+manifest_file, secret, domain = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(manifest_file, "r", encoding="utf-8") as f:
+    m = json.load(f)
+if "protocols" not in m:
+    m["protocols"] = {}
+m["protocols"]["mtproto"] = {
+    "enabled": True,
+    "port": 8443,
+    "secret": secret,
+    "domain": domain
+}
+with open(manifest_file, "w", encoding="utf-8") as f:
+    json.dump(m, f, indent=2)
+' "$manifest_file" "$mtg_secret" "$MTPROTO_DOMAIN"
+            log_info "Saved MTProto credentials to $manifest_file"
+        fi
+
+        log_info "Manifest verified at $manifest_file, skipping core key generation."
         return 0
     fi
 
@@ -423,6 +473,9 @@ except Exception:
     local created_at
     created_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "2026-11-10T10:00:00Z")
 
+    local mtg_secret
+    mtg_secret=$(generate_mtproto_secret "$MTPROTO_DOMAIN")
+
     cat << EOF > "$manifest_file"
 {
   "version": "1.0.0",
@@ -467,6 +520,12 @@ except Exception:
       "reserved": ${warp_reserved},
       "server": "${warp_server}",
       "server_port": ${warp_port}
+    },
+    "mtproto": {
+      "enabled": true,
+      "port": 8443,
+      "secret": "${mtg_secret}",
+      "domain": "${MTPROTO_DOMAIN}"
     }
   }
 }
@@ -603,6 +662,38 @@ EOF
     fi
 }
 
+setup_mtproto() {
+    log_info "Configuring MTProto Proxy (mtg v2)..."
+    local manifest_file="$VPN_DIR/manifest.json"
+    local mtg_secret=""
+    local mtg_domain=""
+    if [[ -f "$manifest_file" ]]; then
+        mtg_secret=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('protocols',{}).get('mtproto',{}).get('secret',''))" 2>/dev/null || true)
+        mtg_domain=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('protocols',{}).get('mtproto',{}).get('domain',''))" 2>/dev/null || true)
+    fi
+    if [[ -z "$mtg_secret" ]]; then
+        mtg_secret=$(generate_mtproto_secret "${mtg_domain:-$MTPROTO_DOMAIN}")
+    fi
+
+    local server_ip="${SERVER_IP:-}"
+    if [[ -z "$server_ip" && -f "$manifest_file" ]]; then
+        server_ip=$(get_json_val "ipv4" "$manifest_file" || true)
+    fi
+
+    local mtg_bind="0.0.0.0:8443"
+    if [[ -n "$server_ip" && "$server_ip" != "127.0.0.1" ]]; then
+        mtg_bind="${server_ip}:8443"
+    fi
+
+    local env_file="$VPN_DIR/.env"
+    cat << EOF > "$env_file"
+MTG_BIND_TO=${mtg_bind}
+MTG_SECRET=${mtg_secret}
+EOF
+    chmod 600 "$env_file"
+    log_info "Saved MTProto environment to $env_file"
+}
+
 render_singbox_config() {
     log_info "Rendering sing-box configuration..."
     local manifest_file="$VPN_DIR/manifest.json"
@@ -704,6 +795,7 @@ main() {
     generate_crypto_keys
     setup_tls_certificates
     setup_caddy_decoy
+    setup_mtproto
     render_singbox_config
     start_services
 }

@@ -81,6 +81,7 @@ cmd_status() {
     local reality_port="443"
     local reality_sni=""
     local hy2_port="443"
+    local mtproto_port="8443"
 
     if command -v jq >/dev/null 2>&1; then
         node_uuid=$(jq -r '.node_uuid // empty' "$MANIFEST_FILE")
@@ -89,11 +90,13 @@ cmd_status() {
         reality_port=$(jq -r '.protocols.vless_reality.port // "443"' "$MANIFEST_FILE")
         reality_sni=$(jq -r '.protocols.vless_reality.sni // empty' "$MANIFEST_FILE")
         hy2_port=$(jq -r '.protocols.hysteria2.port // "443"' "$MANIFEST_FILE")
+        mtproto_port=$(jq -r '.protocols.mtproto.port // "8443"' "$MANIFEST_FILE")
     else
         node_uuid=$(grep -o '"node_uuid": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
         server_ip=$(grep -o '"ipv4": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
         server_domain=$(grep -o '"domain": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
         reality_sni=$(grep -o '"sni": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
+        mtproto_port=$(run_python -c "import json; m=json.load(open('$MANIFEST_FILE')); print(m.get('protocols',{}).get('mtproto',{}).get('port', 8443))" 2>/dev/null || echo "8443")
     fi
 
     echo "Node UUID:     ${node_uuid:-unknown}"
@@ -106,6 +109,7 @@ cmd_status() {
     echo "Configured Services:"
     echo "  - VLESS Reality:  ${reality_port}/TCP (XTLS-Vision)"
     echo "  - Hysteria 2:     ${hy2_port}/UDP (Salamander Obfs)"
+    echo "  - MTProto Proxy:  ${mtproto_port}/TCP (Fake-TLS mtg v2)"
     echo "  - Decoy (Caddy):  80/TCP & 127.0.0.1:8443 (HTTP-01 & Reality Fallback)"
     echo ""
 
@@ -120,6 +124,7 @@ cmd_status() {
     echo "--- Listening Network Ports ---"
     local tcp_listening="no"
     local udp_listening="no"
+    local mtproto_listening="no"
     local http_listening="no"
     local caddy_internal="no"
 
@@ -129,6 +134,9 @@ cmd_status() {
         fi
         if ss -uln | grep -E -q ":${hy2_port}\b"; then
             udp_listening="yes"
+        fi
+        if ss -tln | grep -E -q ":${mtproto_port}\b"; then
+            mtproto_listening="yes"
         fi
         if ss -tln | grep -E -q ":80\b"; then
             http_listening="yes"
@@ -143,6 +151,9 @@ cmd_status() {
         if netstat -uln | grep -E -q ":${hy2_port}\b"; then
             udp_listening="yes"
         fi
+        if netstat -tln | grep -E -q ":${mtproto_port}\b"; then
+            mtproto_listening="yes"
+        fi
         if netstat -tln | grep -E -q ":80\b"; then
             http_listening="yes"
         fi
@@ -152,12 +163,14 @@ cmd_status() {
     else
         tcp_listening="active (containerized)"
         udp_listening="active (containerized)"
+        mtproto_listening="active (containerized)"
         http_listening="active (containerized)"
         caddy_internal="active (containerized)"
     fi
 
     echo "  Port ${reality_port}/TCP (VLESS Reality): ${tcp_listening}"
     echo "  Port ${hy2_port}/UDP (Hysteria 2):    ${udp_listening}"
+    echo "  Port ${mtproto_port}/TCP (MTProto Proxy):  ${mtproto_listening}"
     echo "  Port 80/TCP (Caddy HTTP-01/Decoy):   ${http_listening}"
     echo "  Port 8443/TCP (Caddy Reality Target): ${caddy_internal}"
     echo "=========================================================="
@@ -242,6 +255,7 @@ from datetime import datetime, timezone
 
 users_file = sys.argv[1]
 username = sys.argv[2]
+manifest_file = sys.argv[3] if len(sys.argv) > 3 else ""
 
 data = {"users": []}
 if os.path.exists(users_file):
@@ -256,12 +270,25 @@ for u in users:
     if u.get("name") == username:
         sys.exit(f"Error: User \"{username}\" already exists.")
 
+tg_secret = ""
+if manifest_file and os.path.exists(manifest_file):
+    try:
+        with open(manifest_file, "r", encoding="utf-8") as mf:
+            m = json.load(mf)
+            tg_secret = m.get("protocols", {}).get("mtproto", {}).get("secret", "")
+    except Exception:
+        pass
+
+if not tg_secret:
+    dom_hex = "www.cloudflare.com".encode("utf-8").hex()
+    tg_secret = f"ee{secrets.token_hex(16)}{dom_hex}"
+
 new_user = {
     "name": username,
     "uuid": str(uuid.uuid4()).lower(),
     "password": secrets.token_urlsafe(18),
     "sub_key": base64.b64encode(secrets.token_bytes(32)).decode(),
-    "tg_secret": secrets.token_hex(16),
+    "tg_secret": tg_secret,
     "sub_token": secrets.token_hex(16),
     "status": "active",
     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -275,7 +302,7 @@ with open(tmp_users, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
 os.replace(tmp_users, users_file)
 print(new_user["uuid"])
-' "$users_file" "$username" 2>&1)
+' "$users_file" "$username" "$MANIFEST_FILE" 2>&1)
     local py_exit=$?
     set -e
 
@@ -390,6 +417,8 @@ reality_pbk = ""
 reality_sid = ""
 hy2_port = "443"
 hy2_obfs = ""
+mtproto_port = "8443"
+mtproto_secret = ""
 
 if os.path.exists(manifest_file):
     try:
@@ -406,6 +435,10 @@ if os.path.exists(manifest_file):
             hy2 = m.get("protocols", {}).get("hysteria2", {})
             hy2_port = str(hy2.get("port", "443"))
             hy2_obfs = hy2.get("obfs_password", "")
+
+            mtp = m.get("protocols", {}).get("mtproto", {})
+            mtproto_port = str(mtp.get("port", "8443"))
+            mtproto_secret = mtp.get("secret", "")
     except Exception:
         pass
 
@@ -415,15 +448,24 @@ if not server_ip:
 uuid = user.get("uuid", "")
 password = user.get("password", "")
 
+tg_secret = user.get("tg_secret", "")
+if not tg_secret or not tg_secret.startswith("ee"):
+    tg_secret = mtproto_secret
+if not tg_secret:
+    dom_hex = "www.cloudflare.com".encode("utf-8").hex()
+    tg_secret = f"ee000102030405060708090a0b0c0d0e0f{dom_hex}"
+
 vless_uri = f"vless://{uuid}@{server_ip}:{reality_port}?security=reality&flow=xtls-rprx-vision&pbk={reality_pbk}&sni={reality_sni}&sid={reality_sid}&fp=chrome#{username}-Reality"
 hy2_uri = f"hysteria2://{password}@{server_ip}:{hy2_port}/?sni={reality_sni}&obfs=salamander&obfs-password={hy2_obfs}&insecure=1#{username}-Hy2"
+tg_uri = f"tg://proxy?server={server_ip}&port={mtproto_port}&secret={tg_secret}#{username}"
 
 out = {
     "name": username,
     "status": user.get("status", "active"),
     "uuid": uuid,
     "vless_uri": vless_uri,
-    "hy2_uri": hy2_uri
+    "hy2_uri": hy2_uri,
+    "tg_uri": tg_uri
 }
 print(json.dumps(out))
 ' "$users_file" "$MANIFEST_FILE" "$username" 2>&1)
@@ -435,9 +477,10 @@ print(json.dumps(out))
         return 1
     fi
 
-    local vless_uri hy2_uri user_status user_uuid
+    local vless_uri hy2_uri tg_uri user_status user_uuid
     vless_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['vless_uri'])")
     hy2_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['hy2_uri'])")
+    tg_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['tg_uri'])")
     user_status=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['status'])")
     user_uuid=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['uuid'])")
 
@@ -460,12 +503,21 @@ print(json.dumps(out))
         echo "--- Hysteria 2 QR Code ---"
         render_qr "$hy2_uri"
         echo ""
+        echo "--- Telegram MTProto ---"
+        echo "$tg_uri"
+        echo ""
+        echo "--- Telegram MTProto QR Code ---"
+        render_qr "$tg_uri"
+        echo ""
     else
         echo "--- VLESS Reality ---"
         echo "$vless_uri"
         echo ""
         echo "--- Hysteria 2 ---"
         echo "$hy2_uri"
+        echo ""
+        echo "--- Telegram MTProto ---"
+        echo "$tg_uri"
         echo ""
         echo "(Tip: Run 'vpn user show $username --qr' to display terminal QR codes)"
     fi

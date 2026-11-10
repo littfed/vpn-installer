@@ -17,6 +17,21 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  mtg:
+    image: nineseconds/mtg:2
+    container_name: mtproto-proxy
+    restart: always
+    network_mode: "host"
+    environment:
+      - MTG_SECRET=${MTG_SECRET:-}
+      - MTG_BIND_TO=${MTG_BIND_TO:-0.0.0.0:8443}
+    command: simple-run -c 8192 -a 1MB ${MTG_BIND_TO:-0.0.0.0:8443} ${MTG_SECRET:-ee000102030405060708090a0b0c0d0e0f7777772e636c6f7564666c6172652e636f6d}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   caddy:
     image: caddy:alpine
     container_name: caddy-decoy
