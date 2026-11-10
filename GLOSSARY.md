@@ -33,5 +33,21 @@ A centralized, token-authenticated delivery endpoint or profile file distributin
 _Avoid_: Config link, server list
 
 **Identity**:
-A user's unified credential set containing their canonical UUID, passwords, and tokens across all enabled protocols on a node or pool.
+A user's unified credential set containing their canonical UUID, passwords, tokens, and AmneziaWG WireGuard keypair/tunnel IP across all enabled protocols on a node or pool.
 _Avoid_: User account, client config, profile
+
+**AmneziaWG**:
+An obfuscated Layer 3 WireGuard variant injecting junk packets (Jc, Jmin, Jmax) and randomised packet headers (H1-H4) to defeat DPI signature analysis.
+_Avoid_: AWG tunnel, WireGuard proxy, Amnezia VPN
+
+**TUIC**:
+A 0-RTT, high-concurrency proxy protocol running over native QUIC datagrams, used as a low-latency UDP transport complementary to Hysteria 2.
+_Avoid_: TUIC proxy, QUIC VPN
+
+**ShadowTLS**:
+A camouflage proxy that transparently forwards initial TLS handshakes to a legitimate external domain before handing off authenticated streams to a local Shadowsocks-2022 backend.
+_Avoid_: Shadow tunnel, TLS faker
+
+**Emergency Egress**:
+A CDN-fronted fallback transport (XHTTP / SplitHTTP / WebSocket) proxying traffic through public CDN edge nodes (e.g. Cloudflare) to survive direct IP address blacklisting by censors.
+_Avoid_: CDN VPN, Cloudflare bypass, unblocker
