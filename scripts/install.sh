@@ -352,6 +352,45 @@ with open(manifest_file, "w", encoding="utf-8") as f:
             log_info "Saved MTProto credentials to $manifest_file"
         fi
 
+        local has_awg=""
+        has_awg=$(run_python -c "import json; m=json.load(open('$manifest_file')); print('yes' if m.get('protocols',{}).get('amneziawg') else 'no')" 2>/dev/null || echo "no")
+        if [[ "$has_awg" != "yes" ]]; then
+            log_info "Manifest lacks AmneziaWG. Generating AmneziaWG parameters..."
+            run_python -c '
+import json, sys, secrets, base64
+manifest_file = sys.argv[1]
+try:
+    from cryptography.hazmat.primitives.asymmetric import x25519
+    priv = x25519.X25519PrivateKey.generate()
+    pub = priv.public_key()
+    priv_b64 = base64.b64encode(priv.private_bytes_raw()).decode()
+    pub_b64 = base64.b64encode(pub.public_bytes_raw()).decode()
+except Exception:
+    priv_b64 = base64.b64encode(secrets.token_bytes(32)).decode()
+    pub_b64 = base64.b64encode(secrets.token_bytes(32)).decode()
+with open(manifest_file, "r", encoding="utf-8") as f:
+    m = json.load(f)
+m.setdefault("protocols", {})["amneziawg"] = {
+    "enabled": True,
+    "port": 48291,
+    "private_key": priv_b64,
+    "public_key": pub_b64,
+    "jc": secrets.randbelow(5) + 4,
+    "jmin": 40,
+    "jmax": 70,
+    "s1": secrets.randbelow(40) + 20,
+    "s2": secrets.randbelow(40) + 40,
+    "h1": secrets.randbelow(1900000000) + 10000000,
+    "h2": secrets.randbelow(1900000000) + 10000000,
+    "h3": secrets.randbelow(1900000000) + 10000000,
+    "h4": secrets.randbelow(1900000000) + 10000000
+}
+with open(manifest_file, "w", encoding="utf-8") as f:
+    json.dump(m, f, indent=2)
+' "$manifest_file"
+            log_info "Saved AmneziaWG parameters to $manifest_file"
+        fi
+
         local has_sub=""
         has_sub=$(run_python -c "import json; m=json.load(open('$manifest_file')); print('yes' if 'subscription' in m else 'no')" 2>/dev/null || echo "no")
         local req_sub_enabled="false"
@@ -511,6 +550,30 @@ except Exception:
         sub_enabled="true"
     fi
 
+    local awg_vals
+    awg_vals=$(run_python -c '
+import secrets, base64
+try:
+    from cryptography.hazmat.primitives.asymmetric import x25519
+    priv = x25519.X25519PrivateKey.generate()
+    pub = priv.public_key()
+    priv_b64 = base64.b64encode(priv.private_bytes_raw()).decode()
+    pub_b64 = base64.b64encode(pub.public_bytes_raw()).decode()
+except Exception:
+    priv_b64 = base64.b64encode(secrets.token_bytes(32)).decode()
+    pub_b64 = base64.b64encode(secrets.token_bytes(32)).decode()
+h1 = secrets.randbelow(1900000000) + 10000000
+h2 = secrets.randbelow(1900000000) + 10000000
+h3 = secrets.randbelow(1900000000) + 10000000
+h4 = secrets.randbelow(1900000000) + 10000000
+jc = secrets.randbelow(5) + 4
+s1 = secrets.randbelow(40) + 20
+s2 = secrets.randbelow(40) + 40
+print(f"{priv_b64} {pub_b64} {h1} {h2} {h3} {h4} {jc} 40 70 {s1} {s2}")
+')
+    local awg_priv awg_pub awg_h1 awg_h2 awg_h3 awg_h4 awg_jc awg_jmin awg_jmax awg_s1 awg_s2
+    read -r awg_priv awg_pub awg_h1 awg_h2 awg_h3 awg_h4 awg_jc awg_jmin awg_jmax awg_s1 awg_s2 <<< "$awg_vals"
+
     cat << EOF > "$manifest_file"
 {
   "version": "1.0.0",
@@ -561,6 +624,26 @@ except Exception:
       "port": 8443,
       "secret": "${mtg_secret}",
       "domain": "${MTPROTO_DOMAIN}"
+    },
+    "tuic": {
+      "enabled": true,
+      "port": 8443,
+      "congestion_control": "bbr"
+    },
+    "amneziawg": {
+      "enabled": true,
+      "port": 48291,
+      "private_key": "${awg_priv}",
+      "public_key": "${awg_pub}",
+      "jc": ${awg_jc},
+      "jmin": ${awg_jmin},
+      "jmax": ${awg_jmax},
+      "s1": ${awg_s1},
+      "s2": ${awg_s2},
+      "h1": ${awg_h1},
+      "h2": ${awg_h2},
+      "h3": ${awg_h3},
+      "h4": ${awg_h4}
     }
   },
   "subscription": {
@@ -822,6 +905,86 @@ render_singbox_config() {
     log_info "Config written to $config_target"
 }
 
+render_awg_config() {
+    log_info "Rendering AmneziaWG configuration..."
+    local awg_dir="$VPN_DIR/awg"
+    mkdir -p "$awg_dir"
+    local awg_conf="$awg_dir/awg0.conf"
+    local manifest_file="$VPN_DIR/manifest.json"
+    local users_file="$VPN_DIR/users.json"
+
+    if [[ ! -f "$manifest_file" ]]; then
+        return 0
+    fi
+
+    run_python -c '
+import json, sys, os
+mf, uf, out = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(mf, "r", encoding="utf-8") as f:
+        m = json.load(f)
+except Exception:
+    sys.exit(0)
+
+awg = m.get("protocols", {}).get("amneziawg", {})
+if not awg or not awg.get("enabled", True):
+    sys.exit(0)
+
+awg_port = awg.get("port", 48291)
+awg_priv = awg.get("private_key", "")
+awg_jc = awg.get("jc", 5)
+awg_jmin = awg.get("jmin", 40)
+awg_jmax = awg.get("jmax", 70)
+awg_s1 = awg.get("s1", 35)
+awg_s2 = awg.get("s2", 55)
+awg_h1 = awg.get("h1", 123456)
+awg_h2 = awg.get("h2", 234567)
+awg_h3 = awg.get("h3", 345678)
+awg_h4 = awg.get("h4", 456789)
+
+lines = [
+    "[Interface]",
+    "Address = 10.8.0.1/24",
+    f"ListenPort = {awg_port}",
+    f"PrivateKey = {awg_priv}",
+    f"Jc = {awg_jc}",
+    f"Jmin = {awg_jmin}",
+    f"Jmax = {awg_jmax}",
+    f"S1 = {awg_s1}",
+    f"S2 = {awg_s2}",
+    f"H1 = {awg_h1}",
+    f"H2 = {awg_h2}",
+    f"H3 = {awg_h3}",
+    f"H4 = {awg_h4}",
+    ""
+]
+
+users = []
+if os.path.exists(uf):
+    try:
+        with open(uf, "r", encoding="utf-8") as f:
+            users = json.load(f).get("users", [])
+    except Exception:
+        pass
+
+for u in users:
+    if u.get("status") == "active" and u.get("awg"):
+        u_awg = u["awg"]
+        u_name = u.get("name", "unknown")
+        u_pub = u_awg.get("public_key", "")
+        u_ip = u_awg.get("ip", "10.8.0.2/32")
+        lines.append("[Peer]")
+        lines.append(f"# User: {u_name}")
+        lines.append(f"PublicKey = {u_pub}")
+        lines.append(f"AllowedIPs = {u_ip}")
+        lines.append("")
+
+with open(out, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + "\n")
+' "$manifest_file" "$users_file" "$awg_conf"
+    log_info "AmneziaWG config written to $awg_conf"
+}
+
 start_services() {
     if [[ "$SKIP_CONTAINER_START" == "1" ]]; then
         log_info "Skipping container start as requested."
@@ -876,6 +1039,7 @@ main() {
     setup_caddy_decoy
     setup_mtproto
     render_singbox_config
+    render_awg_config
     configure_firewall
     start_services
 }

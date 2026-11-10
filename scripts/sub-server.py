@@ -109,6 +109,7 @@ def build_clash_yaml(manifest, user, vpn_dir=None):
         nh = nodes_health.get(node_name, {}).get("protocols", {})
         vless_status = nh.get("vless_reality", {}).get("status", "healthy")
         hy2_status = nh.get("hysteria2", {}).get("status", "healthy")
+        tuic_status = nh.get("tuic", {}).get("status", "healthy")
 
         if vless.get("enabled", True) and vless.get("public_key"):
             vless_name = f"{node_name} - Reality" if len(nodes) > 1 else "VLESS-Reality"
@@ -150,6 +151,27 @@ def build_clash_yaml(manifest, user, vpn_dir=None):
     skip-cert-verify: true{fingerprint_line}
     obfs: salamander
     obfs-password: {hy2.get("obfs_password", "")}""")
+
+        tuic = node.get("protocols", {}).get("tuic")
+        if tuic and tuic.get("enabled", True):
+            tuic_name = f"{node_name} - TUIC" if len(nodes) > 1 else "TUIC-v5"
+            proxy_names.append(tuic_name)
+            if tuic_status == "healthy":
+                healthy_names.append(tuic_name)
+            else:
+                degraded_names.append(tuic_name)
+            tuic_sni = tuic.get("sni", hy2.get("sni", vless.get("sni", "gateway.icloud.com")))
+            proxies_list.append(f"""  - name: "{tuic_name}"
+    type: tuic
+    server: {host}
+    port: {tuic.get("port", 8443)}
+    uuid: {uuid}
+    password: {password}
+    sni: {tuic_sni}
+    skip-cert-verify: true
+    congestion-controller: bbr
+    alpn:
+      - h3""")
 
     proxies_yaml = "\n\n".join(proxies_list)
 
@@ -226,6 +248,7 @@ def build_singbox_json(manifest, user, vpn_dir=None):
         nh = nodes_health.get(node_name, {}).get("protocols", {})
         vless_status = nh.get("vless_reality", {}).get("status", "healthy")
         hy2_status = nh.get("hysteria2", {}).get("status", "healthy")
+        tuic_status = nh.get("tuic", {}).get("status", "healthy")
 
         if vless.get("enabled", True) and vless.get("public_key"):
             vless_tag = f"{node_name}-Reality" if len(nodes) > 1 else "vless-proxy"
@@ -277,6 +300,33 @@ def build_singbox_json(manifest, user, vpn_dir=None):
                 "obfs": {
                     "type": "salamander",
                     "password": hy2.get("obfs_password", "")
+                }
+            })
+
+        tuic = node.get("protocols", {}).get("tuic")
+        if tuic and tuic.get("enabled", True):
+            tuic_tag = f"{node_name}-TUIC" if len(nodes) > 1 else "tuic-proxy"
+            proxy_tags.append(tuic_tag)
+            if tuic_status == "healthy":
+                healthy_tags.append(tuic_tag)
+            else:
+                degraded_tags.append(tuic_tag)
+            tuic_sni = tuic.get("sni", hy2.get("sni", vless.get("sni", "gateway.icloud.com")))
+            outbounds.append({
+                "type": "tuic",
+                "tag": tuic_tag,
+                "server": host,
+                "server_port": tuic.get("port", 8443),
+                "uuid": uuid,
+                "password": password,
+                "congestion_control": "bbr",
+                "tls": {
+                    "enabled": True,
+                    "server_name": tuic_sni,
+                    "alpn": [
+                        "h3"
+                    ],
+                    "insecure": True
                 }
             })
 
@@ -422,6 +472,63 @@ def build_singbox_json(manifest, user, vpn_dir=None):
     return json.dumps(config, indent=2, ensure_ascii=False) + "\n"
 
 
+def build_awg_conf(manifest, user, vpn_dir=None, target_node=None):
+    nodes = get_nodes(manifest, vpn_dir)
+    awg_user = user.get("awg", {})
+    client_priv = awg_user.get("private_key", "")
+    client_ip = awg_user.get("ip", "10.8.0.2/32")
+
+    selected_node = None
+    for n in nodes:
+        if target_node and n.get("name", "").lower() == target_node.lower():
+            selected_node = n
+            break
+        if not selected_node and n.get("protocols", {}).get("amneziawg", {}).get("enabled", True):
+            selected_node = n
+
+    if not selected_node and nodes:
+        selected_node = nodes[0]
+
+    awg_proto = selected_node.get("protocols", {}).get("amneziawg", {}) if selected_node else {}
+    server_host = selected_node.get("server") or selected_node.get("domain") or selected_node.get("ipv4") or "127.0.0.1"
+    server_port = awg_proto.get("port", 48291)
+    server_pub = awg_proto.get("public_key", "")
+
+    jc = awg_proto.get("jc", 5)
+    jmin = awg_proto.get("jmin", 40)
+    jmax = awg_proto.get("jmax", 70)
+    s1 = awg_proto.get("s1", 35)
+    s2 = awg_proto.get("s2", 55)
+    h1 = awg_proto.get("h1", 123456)
+    h2 = awg_proto.get("h2", 234567)
+    h3 = awg_proto.get("h3", 345678)
+    h4 = awg_proto.get("h4", 456789)
+
+    lines = [
+        "[Interface]",
+        f"PrivateKey = {client_priv}",
+        f"Address = {client_ip}",
+        "DNS = 1.1.1.1, 77.88.8.8",
+        f"Jc = {jc}",
+        f"Jmin = {jmin}",
+        f"Jmax = {jmax}",
+        f"S1 = {s1}",
+        f"S2 = {s2}",
+        f"H1 = {h1}",
+        f"H2 = {h2}",
+        f"H3 = {h3}",
+        f"H4 = {h4}",
+        "",
+        "[Peer]",
+        f"PublicKey = {server_pub}",
+        f"Endpoint = {server_host}:{server_port}",
+        "AllowedIPs = 0.0.0.0/0, ::/0",
+        "PersistentKeepalive = 25",
+        ""
+    ]
+    return "\n".join(lines)
+
+
 def build_base64_uris(manifest, user, vpn_dir=None):
     username = user.get("name", "user")
     uuid = user.get("uuid", "")
@@ -457,6 +564,14 @@ def build_base64_uris(manifest, user, vpn_dir=None):
                 tls_pin_params = "&insecure=1"
             uris.append(
                 f"hysteria2://{password}@{host}:{hy2.get('port', 443)}/?sni={hy2.get('sni', vless.get('sni', 'gateway.icloud.com'))}&obfs=salamander&obfs-password={hy2.get('obfs_password', '')}{tls_pin_params}#{username}-Hy2{suffix}{hy2_flag}"
+            )
+        tuic = node.get("protocols", {}).get("tuic")
+        tuic_status = nh.get("tuic", {}).get("status", "healthy")
+        tuic_flag = "-DEGRADED" if tuic_status == "degraded" else ""
+        if tuic and tuic.get("enabled", True):
+            tuic_sni = tuic.get("sni", hy2.get("sni", vless.get("sni", "gateway.icloud.com")))
+            uris.append(
+                f"tuic://{uuid}:{password}@{host}:{tuic.get('port', 8443)}/?sni={tuic_sni}&congestion_control=bbr&alpn=h3&allow_insecure=1#{username}-TUIC{suffix}{tuic_flag}"
             )
 
     raw_text = "\n".join(uris) + "\n"
@@ -537,6 +652,8 @@ class SubscriptionHandler(BaseHTTPRequestHandler):
                 selected_format = "clash"
             elif fmt_lower in ("singbox", "sing-box", "json"):
                 selected_format = "singbox"
+            elif fmt_lower in ("awg", "amnezia", "amneziawg", "conf"):
+                selected_format = "awg"
             elif fmt_lower in ("base64", "b64", "uri", "uris"):
                 selected_format = "base64"
         else:
@@ -557,6 +674,12 @@ class SubscriptionHandler(BaseHTTPRequestHandler):
             payload = build_singbox_json(manifest_data, target_user, vpn_dir).encode("utf-8")
             content_type = "application/json; charset=utf-8"
             filename = "config.json"
+        elif selected_format == "awg":
+            target_node = query.get("node", [None])[0]
+            payload = build_awg_conf(manifest_data, target_user, vpn_dir, target_node).encode("utf-8")
+            content_type = "text/plain; charset=utf-8"
+            username = target_user.get("name", "vpn")
+            filename = f"{username}-awg.conf"
         else:
             payload = build_base64_uris(manifest_data, target_user, vpn_dir).encode("utf-8")
             content_type = "text/plain; charset=utf-8"

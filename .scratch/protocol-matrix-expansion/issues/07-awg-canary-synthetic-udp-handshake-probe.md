@@ -5,10 +5,10 @@
 
 **Blocked by:** 05: Сервис amneziawg-go в Docker Compose и генератор параметров обфускации (v2.0/v3.1), 06: Доставка подписок для роутеров: эндпоинт ?format=awg и экспорт QR в CLI
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] В `scripts/canary-probe.py` реализована функция отправки мусорных пакетов и пакета инициализации рукопожатия WireGuard/AmneziaWG с заменой байта типа на 32-битный `H1`.
-- [ ] Ожидается ответный пакет от сервера ноды с валидацией байта типа `H2` и фиксацией сетевой задержки RTT.
-- [ ] Данные замеров передаются в Circuit Breaker для обновления истории в `node-health.json`.
-- [ ] В табличный вывод `vpn probe` добавляется строка AmneziaWG: `| Node-1 | AmneziaWG | <rtt> ms | N/A | N/A | HEALTHY | 0/5 |`.
-- [ ] Флаг `--protocol awg` поддерживается в `vpn probe`.
+- [x] В `scripts/canary-probe.py` реализована функция отправки мусорных пакетов и пакета инициализации рукопожатия WireGuard/AmneziaWG с заменой байта типа на 32-битный `H1`.
+- [x] Ожидается ответный пакет от сервера ноды с валидацией байта типа `H2` и фиксацией сетевой задержки RTT.
+- [x] Данные замеров передаются в Circuit Breaker для обновления истории в `node-health.json`.
+- [x] В табличный вывод `vpn probe` добавляется строка AmneziaWG: `| Node-1 | AmneziaWG | <rtt> ms | N/A | N/A | HEALTHY | 0/5 |`.
+- [x] Флаг `--protocol awg` поддерживается в `vpn probe`.

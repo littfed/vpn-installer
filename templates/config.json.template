@@ -77,6 +77,28 @@
           "h3"
         ]
       }
+    },
+    {
+      "type": "tuic",
+      "tag": "tuic-in",
+      "listen": "::",
+      "listen_port": 8443,
+      "users": [
+        {
+          "name": "default-admin",
+          "uuid": "__NODE_UUID__",
+          "password": "__HYSTERIA2_PASSWORD__"
+        }
+      ],
+      "congestion_control": "bbr",
+      "tls": {
+        "enabled": true,
+        "certificate_path": "/etc/sing-box/certs/fullchain.pem",
+        "key_path": "/etc/sing-box/certs/privkey.pem",
+        "alpn": [
+          "h3"
+        ]
+      }
     }
   ],
   "endpoints": [

@@ -5,9 +5,9 @@
 
 **Blocked by:** 01: Инбаунд TUIC v5 в ядре sing-box и настройка сети, 02: Поддержка TUIC v5 в сервере подписок и балансировке AUTO-FASTEST
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] В `scripts/canary-probe.py` генератор эфемерного конфига sing-box создает outbound `tuic` на порт 8443 ноды.
-- [ ] Выполняются 3 замера через TUIC туннель: Cloudflare 204 ping, прямой HTTP/3 / HTTPS запрос к ресурсу для проверки обхода ТСПУ, запрос к API OpenAI для проверки сквозного WARP egress.
-- [ ] Логика Circuit Breaker обновляет историю и статус протокола `tuic` в `node-health.json`.
-- [ ] Команды `vpn probe` и `vpn node test` поддерживают флаг `--protocol tuic` и выводят отдельную строку таблицы: `| Node-1 | TUIC-v5 | <rtt> ms | OK | OK | HEALTHY | 0/5 |`.
+- [x] В `scripts/canary-probe.py` генератор эфемерного конфига sing-box создает outbound `tuic` на порт 8443 ноды.
+- [x] Выполняются 3 замера через TUIC туннель: Cloudflare 204 ping, прямой HTTP/3 / HTTPS запрос к ресурсу для проверки обхода ТСПУ, запрос к API OpenAI для проверки сквозного WARP egress.
+- [x] Логика Circuit Breaker обновляет историю и статус протокола `tuic` в `node-health.json`.
+- [x] Команды `vpn probe` и `vpn node test` поддерживают флаг `--protocol tuic` и выводят отдельную строку таблицы: `| Node-1 | tuic | <rtt> ms | OK | OK | HEALTHY | 0/5 |`.

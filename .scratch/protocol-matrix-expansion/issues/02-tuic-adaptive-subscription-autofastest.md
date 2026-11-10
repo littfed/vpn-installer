@@ -5,10 +5,10 @@
 
 **Blocked by:** 01: Инбаунд TUIC v5 в ядре sing-box и настройка сети
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] В `scripts/sub-server.py` функция `build_singbox_json` добавляет outbound `type: tuic` с хостом ноды, портом 8443, uuid/паролем пользователя, `congestion_control: "bbr"`, `tls.enabled: true` и `insecure: true` (или SHA-256 пиннингом).
-- [ ] В `scripts/sub-server.py` функция `build_clash_yaml` добавляет прокси типа `tuic` со всеми необходимыми атрибутами (`uuid`, `password`, `sni`, `skip-cert-verify: true`, `congestion-controller: bbr`).
-- [ ] Прокси TUIC v5 включается в группы селекторов `proxy-auto` и `proxy` при условии, что его статус в `node-health.json` равен `healthy`.
-- [ ] В `build_base64_uris` добавляется URI схемы `tuic://` с аннотацией `-DEGRADED` при сбое.
-- [ ] Эндпоинты `https://<host>/sub/<token>?format=singbox` и `?format=clash` корректно отдают конфигурации с TUIC v5.
+- [x] В `scripts/sub-server.py` функция `build_singbox_json` добавляет outbound `type: tuic` с хостом ноды, портом 8443, uuid/паролем пользователя, `congestion_control: "bbr"`, `tls.enabled: true` и `insecure: true` (или SHA-256 пиннингом).
+- [x] В `scripts/sub-server.py` функция `build_clash_yaml` добавляет прокси типа `tuic` со всеми необходимыми атрибутами (`uuid`, `password`, `sni`, `skip-cert-verify: true`, `congestion-controller: bbr`).
+- [x] Прокси TUIC v5 включается в группы селекторов `proxy-auto` и `proxy` при условии, что его статус в `node-health.json` равен `healthy`.
+- [x] В `build_base64_uris` добавляется URI схемы `tuic://` с аннотацией `-DEGRADED` при сбое.
+- [x] Эндпоинты `https://<host>/sub/<token>?format=singbox` и `?format=clash` корректно отдают конфигурации с TUIC v5.

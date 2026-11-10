@@ -5,13 +5,13 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Шаблон `templates/sing-box/config.json.template` и генератор конфигурации в `vpn-install.sh` содержат инбаунд `type: tuic`:
+- [x] Шаблон `templates/sing-box/config.json.template` и генератор конфигурации в `vpn-install.sh` содержат инбаунд `type: tuic`:
   - `listen: "::"`, `listen_port: 8443`
   - `congestion_control: "bbr"`
   - `tls`: включен, использует существующие сертификаты `server.crt` / `server.key` ноды
   - `users`: рендерятся из активных пользователей `users.json` с полями `uuid` и `password`
-- [ ] Скрипты синхронизации пользователей `scripts/user-sync.sh` и `bin/vpn` сохраняют инбаунд TUIC v5 и корректно обновляют список активных пользователей с отправкой `SIGHUP` контейнеру `sing-box`.
-- [ ] В скриптах фаервола (`templates/iptables-rules.sh`, UFW/nftables в `bin/vpn`) открыт порт `8443/UDP`.
-- [ ] Команда `vpn status` отображает статус работы TUIC v5 на порту 8443/UDP.
+- [x] Скрипты синхронизации пользователей `scripts/user-sync.sh` и `bin/vpn` сохраняют инбаунд TUIC v5 и корректно обновляют список активных пользователей с отправкой `SIGHUP` контейнеру `sing-box`.
+- [x] В скриптах фаервола (`templates/iptables-rules.sh`, UFW/nftables в `bin/vpn`) открыт порт `8443/UDP`.
+- [x] Команда `vpn status` отображает статус работы TUIC v5 на порту 8443/UDP.

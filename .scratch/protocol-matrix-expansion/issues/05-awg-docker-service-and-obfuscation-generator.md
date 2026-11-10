@@ -5,10 +5,10 @@
 
 **Blocked by:** 04: Расширение модели Identity: генерация Curve25519-ключей и IP-пула для AWG
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] В `docker-compose.yml` добавлен сервис `amneziawg` на базе образа `amneziawg-go` с `network_mode: host`, `cap_add: [NET_ADMIN]` и монтированием каталога конфигурации `/opt/vpn-installer/awg`.
-- [ ] Инсталлятор генерирует случайные валидные 32-битные целые числа для `H1–H4` (диапазон `10000000..2000000000`), случайные паддинги `S1/S2` и счетчик/размеры мусорных пакетов `Jc` (4–8), `Jmin` (40), `Jmax` (70) и сохраняет в `manifest.json` в секцию `protocols.amneziawg`.
-- [ ] Серверный файл `awg0.conf` корректно генерируется с параметрами интерфейса ноды (`Address = 10.8.0.1/24`, `ListenPort = 48291`, `PrivateKey = ...`, параметры обфускации) и секциями `[Peer]` для всех активных пользователей.
-- [ ] Правило фаервола разрешает `48291/UDP` и настраивает NAT (`iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o <wan-interface> -j MASQUERADE`).
-- [ ] В `bin/vpn` добавлены проверки статуса AmneziaWG в `vpn status`.
+- [x] В `docker-compose.yml` добавлен сервис `amneziawg` на базе образа `amneziawg-go` с `network_mode: host`, `cap_add: [NET_ADMIN]` и монтированием каталога конфигурации `/opt/vpn-installer/awg`.
+- [x] Инсталлятор генерирует случайные валидные 32-битные целые числа для `H1–H4` (диапазон `10000000..2000000000`), случайные паддинги `S1/S2` и счетчик/размеры мусорных пакетов `Jc` (4–8), `Jmin` (40), `Jmax` (70) и сохраняет в `manifest.json` в секцию `protocols.amneziawg`.
+- [x] Серверный файл `awg0.conf` корректно генерируется с параметрами интерфейса ноды (`Address = 10.8.0.1/24`, `ListenPort = 48291`, `PrivateKey = ...`, параметры обфускации) и секциями `[Peer]` для всех активных пользователей.
+- [x] Правило фаервола разрешает `48291/UDP` и настраивает NAT (`iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o <wan-interface> -j MASQUERADE`).
+- [x] В `bin/vpn` добавлены проверки статуса AmneziaWG в `vpn status`.

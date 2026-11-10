@@ -76,6 +76,8 @@ teardown_firewall() {
         ufw delete allow 443/tcp 2>/dev/null || true
         ufw delete allow 443/udp 2>/dev/null || true
         ufw delete allow 8443/tcp 2>/dev/null || true
+        ufw delete allow 8443/udp 2>/dev/null || true
+        ufw delete allow 48291/udp 2>/dev/null || true
         ufw delete allow 20000:30000/udp 2>/dev/null || true
     fi
 
@@ -99,6 +101,8 @@ setup_firewall() {
         ufw allow 443/tcp 2>/dev/null || true
         ufw allow 443/udp 2>/dev/null || true
         ufw allow 8443/tcp 2>/dev/null || true
+        ufw allow 8443/udp 2>/dev/null || true
+        ufw allow 48291/udp 2>/dev/null || true
         ufw allow 20000:30000/udp 2>/dev/null || true
 
         # Enable UFW non-interactively if inactive
@@ -119,7 +123,19 @@ setup_firewall() {
         fi
     fi
 
-    # 3. Persist iptables rules if tool available
+    # 3. NAT MASQUERADE for AmneziaWG (10.8.0.0/24)
+    if command -v iptables >/dev/null 2>&1; then
+        local def_if
+        def_if=$(ip route 2>/dev/null | grep -E '^default' | awk '{print $5}' | head -n1 || true)
+        if [[ -z "$def_if" ]]; then
+            def_if="eth0"
+        fi
+        if ! iptables -t nat -C POSTROUTING -s 10.8.0.0/24 -o "$def_if" -j MASQUERADE 2>/dev/null; then
+            iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o "$def_if" -j MASQUERADE 2>/dev/null || true
+        fi
+    fi
+
+    # 4. Persist iptables rules if tool available
     if command -v netfilter-persistent >/dev/null 2>&1; then
         netfilter-persistent save 2>/dev/null || true
     elif [[ -d /etc/iptables ]] && command -v iptables-save >/dev/null 2>&1; then

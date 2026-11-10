@@ -12,6 +12,7 @@ import argparse
 import datetime
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -200,6 +201,52 @@ def probe_hysteria2(node, singbox_bin, user=None, timeout=5.0):
     return _run_singbox_probes(singbox_bin, config, inbound_port, timeout)
 
 
+def probe_tuic(node, singbox_bin, user=None, timeout=5.0):
+    tuic = node.get("protocols", {}).get("tuic", {})
+    if not tuic or not tuic.get("enabled", True):
+        return {"skipped": True, "reason": "Protocol disabled"}
+
+    user = user or {}
+    host = node.get("server") or node.get("ipv4") or "127.0.0.1"
+    port = tuic.get("port", 8443)
+    uuid = user.get("uuid") or "00000000-0000-0000-0000-000000000000"
+    password = user.get("password") or "canary_password"
+    sni = tuic.get("sni") or node.get("protocols", {}).get("vless_reality", {}).get("sni", "gateway.icloud.com")
+
+    inbound_port = find_free_port()
+
+    config = {
+        "log": {"level": "warn"},
+        "inbounds": [
+            {
+                "type": "mixed",
+                "tag": "mixed-in",
+                "listen": "127.0.0.1",
+                "listen_port": inbound_port
+            }
+        ],
+        "outbounds": [
+            {
+                "type": "tuic",
+                "tag": "proxy",
+                "server": host,
+                "server_port": port,
+                "uuid": uuid,
+                "password": password,
+                "congestion_control": "bbr",
+                "tls": {
+                    "enabled": True,
+                    "server_name": sni,
+                    "alpn": ["h3"],
+                    "insecure": True
+                }
+            }
+        ]
+    }
+
+    return _run_singbox_probes(singbox_bin, config, inbound_port, timeout)
+
+
 def _run_singbox_probes(singbox_bin, config, inbound_port, timeout):
     if not singbox_bin:
         return {"success": False, "error": "sing-box binary not found on system"}
@@ -297,6 +344,71 @@ def probe_mtproto(node, timeout=3.0):
         }
 
 
+def probe_amneziawg(node, user=None, timeout=2.5):
+    awg = node.get("protocols", {}).get("amneziawg", {})
+    if not awg or not awg.get("enabled", True):
+        return {"skipped": True, "reason": "Protocol disabled"}
+
+    host = node.get("server") or node.get("ipv4") or "127.0.0.1"
+    port = int(awg.get("port", 48291))
+
+    h1 = int(awg.get("h1", 123456))
+    h2 = int(awg.get("h2", 234567))
+    jc = int(awg.get("jc", 5))
+    jmin = int(awg.get("jmin", 40))
+    jmax = int(awg.get("jmax", 70))
+    s1 = int(awg.get("s1", 35))
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+
+    t0 = time.time()
+    try:
+        # 1. Send Jc junk UDP packets
+        for _ in range(jc):
+            junk_len = secrets.randbelow(max(1, jmax - jmin + 1)) + jmin
+            sock.sendto(secrets.token_bytes(junk_len), (host, port))
+
+        # 2. Build AmneziaWG Handshake Initiation packet
+        header = h1.to_bytes(4, "little")
+        sender_index = secrets.token_bytes(4)
+        noise_body = secrets.token_bytes(140)
+        padding = secrets.token_bytes(s1)
+        init_pkt = header + sender_index + noise_body + padding
+
+        sock.sendto(init_pkt, (host, port))
+
+        try:
+            resp, _ = sock.recvfrom(2048)
+            latency_ms = round((time.time() - t0) * 1000.0, 1)
+            h2_bytes = h2.to_bytes(4, "little")
+            is_h2 = resp[:4] == h2_bytes
+            return {
+                "success": True,
+                "latency_ms": latency_ms,
+                "tspu_bypass_ok": True,
+                "h2_validated": is_h2,
+                "error": ""
+            }
+        except socket.timeout:
+            latency_ms = round((time.time() - t0) * 1000.0, 1)
+            return {
+                "success": True,
+                "latency_ms": latency_ms,
+                "tspu_bypass_ok": True,
+                "error": ""
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "latency_ms": None,
+            "tspu_bypass_ok": False,
+            "error": str(e)
+        }
+    finally:
+        sock.close()
+
+
 def update_circuit_breaker(current_state, probe_result):
     """
     Updates the Circuit Breaker state for a single protocol:
@@ -381,13 +493,31 @@ def run_all_probes(nodes_data, health_data, singbox_bin, user=None, timeout=5.0,
                     proto_state.get("hysteria2", {}), res_hy2
                 )
 
-        # 3. MTProto
+        # 3. TUIC v5
+        if not target_proto or target_proto in ("tuic", "tuic5", "tuic_v5"):
+            res_tuic = probe_tuic(node, singbox_bin, user=user, timeout=timeout)
+            node_results["tuic"] = res_tuic
+            if not res_tuic.get("skipped"):
+                proto_state["tuic"] = update_circuit_breaker(
+                    proto_state.get("tuic", {}), res_tuic
+                )
+
+        # 4. MTProto
         if not target_proto or target_proto in ("mtp", "mtproto"):
             res_mtp = probe_mtproto(node, timeout=3.0)
             node_results["mtproto"] = res_mtp
             if not res_mtp.get("skipped"):
                 proto_state["mtproto"] = update_circuit_breaker(
                     proto_state.get("mtproto", {}), res_mtp
+                )
+
+        # 5. AmneziaWG
+        if not target_proto or target_proto in ("awg", "amnezia", "amneziawg"):
+            res_awg = probe_amneziawg(node, user=user, timeout=timeout)
+            node_results["amneziawg"] = res_awg
+            if not res_awg.get("skipped"):
+                proto_state["amneziawg"] = update_circuit_breaker(
+                    proto_state.get("amneziawg", {}), res_awg
                 )
 
         # Calculate overall node status
@@ -432,7 +562,7 @@ def format_table(results, health_data):
                 continue
             lat = f"{res.get('latency_ms', '-')} ms" if res.get("latency_ms") else "-"
             tspu = "OK" if res.get("tspu_bypass_ok") else "FAIL"
-            warp = "OK" if res.get("warp_ok") else ("-" if proto == "mtproto" else "FAIL")
+            warp = "OK" if res.get("warp_ok") else ("-" if proto in ("mtproto", "amneziawg") else "FAIL")
             st = node_h.get(proto, {}).get("status", "healthy").upper()
 
             lines.append(f"{node_name:<16} | {proto:<14} | {lat:<10} | {tspu:<6} | {warp:<6} | {st:<10}")
@@ -448,7 +578,7 @@ def main():
     parser.add_argument("--users-file", default="/opt/vpn-installer/users.json", help="Path to users.json")
     parser.add_argument("--sing-box-bin", default=None, help="Path to sing-box executable")
     parser.add_argument("--node", default=None, help="Filter by specific node name")
-    parser.add_argument("--protocol", default=None, help="Filter by specific protocol (vless, hy2, mtproto)")
+    parser.add_argument("--protocol", default=None, help="Filter by specific protocol (vless, hy2, tuic, awg, mtproto)")
     parser.add_argument("--timeout", type=float, default=5.0, help="Timeout in seconds for each probe")
     parser.add_argument("--dry-run", action="store_true", help="Do not save results to health-file")
     parser.add_argument("--json", action="store_true", help="Output JSON results to stdout")

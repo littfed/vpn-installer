@@ -63,3 +63,23 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  amneziawg:
+    image: amneziavpn/amneziawg-go:latest
+    container_name: amneziawg
+    restart: always
+    network_mode: "host"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./awg:/opt/amnezia/awg
+    environment:
+      - WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
+    command: ["awg-quick", "up", "/opt/amnezia/awg/awg0.conf"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

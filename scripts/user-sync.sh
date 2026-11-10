@@ -31,7 +31,7 @@ sync_users() {
     local tmp_config="${CONFIG_FILE}.tmp.$$"
 
     # Clean up temporary config on unexpected exit
-    trap 'rm -f "$tmp_config"' EXIT INT TERM
+    trap 'rm -f "${tmp_config:-}"' EXIT INT TERM
 
     # Render temporary config with active users
     run_python -c '
@@ -113,73 +113,65 @@ for inbound in config.get("inbounds", []):
                 "server": "127.0.0.1",
                 "server_port": 8443
             }
-        if active_users:
-            inbound["users"] = [
-                {
-                    "name": u["name"],
-                    "uuid": u["uuid"],
-                    "flow": "xtls-rprx-vision"
-                }
-                for u in active_users
-            ]
-        else:
-            inbound["users"] = [
-                {
-                    "name": "default-admin",
-                    "uuid": "00000000-0000-0000-0000-000000000000",
-                    "flow": "xtls-rprx-vision"
-                }
-            ]
+        vless_users = [
+            {
+                "name": u.get("name", "user"),
+                "uuid": u.get("uuid", "00000000-0000-0000-0000-000000000000"),
+                "flow": "xtls-rprx-vision"
+            }
+            for u in active_users if u.get("uuid")
+        ]
+        inbound["users"] = vless_users if vless_users else [
+            {
+                "name": "default-admin",
+                "uuid": "00000000-0000-0000-0000-000000000000",
+                "flow": "xtls-rprx-vision"
+            }
+        ]
     elif ib_type == "hysteria2":
-        if active_users:
-            inbound["users"] = [
-                {
-                    "name": u["name"],
-                    "password": u["password"]
-                }
-                for u in active_users
-            ]
-        else:
-            inbound["users"] = [
-                {
-                    "name": "default-admin",
-                    "password": "disabled"
-                }
-            ]
+        hy2_users = [
+            {
+                "name": u.get("name", "user"),
+                "password": u.get("password", "disabled")
+            }
+            for u in active_users if u.get("password")
+        ]
+        inbound["users"] = hy2_users if hy2_users else [
+            {
+                "name": "default-admin",
+                "password": "disabled"
+            }
+        ]
     elif ib_type == "shadowsocks":
-        if active_users:
-            inbound["users"] = [
-                {
-                    "name": u["name"],
-                    "password": u.get("sub_key", "")
-                }
-                for u in active_users
-            ]
-        else:
-            inbound["users"] = [
-                {
-                    "name": "default-admin",
-                    "password": "disabled"
-                }
-            ]
+        ss_users = [
+            {
+                "name": u.get("name", "user"),
+                "password": u.get("sub_key", "")
+            }
+            for u in active_users if u.get("sub_key")
+        ]
+        inbound["users"] = ss_users if ss_users else [
+            {
+                "name": "default-admin",
+                "password": "disabled"
+            }
+        ]
     elif ib_type == "tuic":
-        if active_users:
-            inbound["users"] = [
-                {
-                    "name": u["name"],
-                    "uuid": u["uuid"],
-                    "password": u["password"]
-                }
-                for u in active_users
-            ]
-        else:
-            inbound["users"] = [
-                {
-                    "name": "default-admin",
-                    "uuid": "00000000-0000-0000-0000-000000000000",
-                    "password": "disabled"
-                }
-            ]
+        tuic_users = [
+            {
+                "name": u.get("name", "user"),
+                "uuid": u.get("uuid", "00000000-0000-0000-0000-000000000000"),
+                "password": u.get("password", "disabled")
+            }
+            for u in active_users if u.get("uuid") and u.get("password")
+        ]
+        inbound["users"] = tuic_users if tuic_users else [
+            {
+                "name": "default-admin",
+                "uuid": "00000000-0000-0000-0000-000000000000",
+                "password": "disabled"
+            }
+        ]
 
 with open(output_file, "w", encoding="utf-8") as f:
     json.dump(config, f, indent=2, ensure_ascii=False)
@@ -228,6 +220,84 @@ with open(output_file, "w", encoding="utf-8") as f:
     if [[ -f "$COMPOSE_FILE" ]] && command -v docker >/dev/null 2>&1; then
         if docker compose -f "$COMPOSE_FILE" ps sing-box 2>/dev/null | grep -E -q "Up|running"; then
             docker compose -f "$COMPOSE_FILE" kill -s HUP sing-box 2>/dev/null || true
+        fi
+    fi
+
+    # Update AmneziaWG configuration
+    local awg_dir="${VPN_DIR}/awg"
+    mkdir -p "$awg_dir"
+    local awg_conf="${awg_dir}/awg0.conf"
+    if [[ -f "$MANIFEST_FILE" ]]; then
+        run_python -c '
+import json, sys, os
+mf, uf, out = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(mf, "r", encoding="utf-8") as f:
+        m = json.load(f)
+except Exception:
+    sys.exit(0)
+
+awg = m.get("protocols", {}).get("amneziawg", {})
+if not awg or not awg.get("enabled", True):
+    sys.exit(0)
+
+awg_port = awg.get("port", 48291)
+awg_priv = awg.get("private_key", "")
+awg_jc = awg.get("jc", 5)
+awg_jmin = awg.get("jmin", 40)
+awg_jmax = awg.get("jmax", 70)
+awg_s1 = awg.get("s1", 35)
+awg_s2 = awg.get("s2", 55)
+awg_h1 = awg.get("h1", 123456)
+awg_h2 = awg.get("h2", 234567)
+awg_h3 = awg.get("h3", 345678)
+awg_h4 = awg.get("h4", 456789)
+
+lines = [
+    "[Interface]",
+    "Address = 10.8.0.1/24",
+    f"ListenPort = {awg_port}",
+    f"PrivateKey = {awg_priv}",
+    f"Jc = {awg_jc}",
+    f"Jmin = {awg_jmin}",
+    f"Jmax = {awg_jmax}",
+    f"S1 = {awg_s1}",
+    f"S2 = {awg_s2}",
+    f"H1 = {awg_h1}",
+    f"H2 = {awg_h2}",
+    f"H3 = {awg_h3}",
+    f"H4 = {awg_h4}",
+    ""
+]
+
+users = []
+if os.path.exists(uf):
+    try:
+        with open(uf, "r", encoding="utf-8") as f:
+            users = json.load(f).get("users", [])
+    except Exception:
+        pass
+
+for u in users:
+    if u.get("status") == "active" and u.get("awg"):
+        u_awg = u["awg"]
+        u_name = u.get("name", "unknown")
+        u_pub = u_awg.get("public_key", "")
+        u_ip = u_awg.get("ip", "10.8.0.2/32")
+        lines.append("[Peer]")
+        lines.append(f"# User: {u_name}")
+        lines.append(f"PublicKey = {u_pub}")
+        lines.append(f"AllowedIPs = {u_ip}")
+        lines.append("")
+
+with open(out, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + "\n")
+' "$MANIFEST_FILE" "$USERS_FILE" "$awg_conf"
+    fi
+
+    if [[ -f "$COMPOSE_FILE" ]] && command -v docker >/dev/null 2>&1; then
+        if docker compose -f "$COMPOSE_FILE" ps amneziawg 2>/dev/null | grep -E -q "Up|running"; then
+            docker compose -f "$COMPOSE_FILE" restart amneziawg 2>/dev/null || true
         fi
     fi
 
