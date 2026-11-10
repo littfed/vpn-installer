@@ -529,7 +529,7 @@ cmd_user_show() {
     set +e
     local py_output
     py_output=$(run_python -c '
-import json, sys, os
+import json, sys, os, secrets, base64
 
 users_file = sys.argv[1]
 manifest_file = sys.argv[2]
@@ -623,9 +623,95 @@ if os.path.exists(manifest_file):
 sub_host = domain if domain else server_ip
 sub_url = f"https://{sub_host}/sub/{sub_token}" if sub_token else ""
 
+tuic_proto = m.get("protocols", {}).get("tuic", {}) if "m" in locals() and m else {}
+tuic_uri = ""
+if tuic_proto and tuic_proto.get("enabled", True):
+    tuic_port = tuic_proto.get("port", 8443)
+    tuic_uri = f"tuic://{uuid}:{password}@{server_ip}:{tuic_port}?congestion_control=bbr&alpn=h3&sni={reality_sni}&allow_insecure=1#{username}-TUIC"
+
 awg_conf = ""
 awg_proto = m.get("protocols", {}).get("amneziawg", {}) if "m" in locals() and m else {}
-user_awg = user.get("awg", {})
+user_awg = user.get("awg")
+
+if not user_awg:
+    def gen_curve25519_local():
+        try:
+            from cryptography.hazmat.primitives.asymmetric import x25519
+            priv = x25519.X25519PrivateKey.generate()
+            pub = priv.public_key()
+            return (
+                base64.b64encode(priv.private_bytes_raw()).decode(),
+                base64.b64encode(pub.public_bytes_raw()).decode()
+            )
+        except Exception:
+            P = 2**255 - 19
+            A24 = 121665
+            def x25519_mult(s_bytes, u_bytes):
+                s = int.from_bytes(s_bytes, "little") & ~7
+                s &= ~(128 << 248)
+                s |= 64 << 248
+                u = int.from_bytes(u_bytes, "little") % P
+                x1, x2, z2, x3, z3 = u, 1, 0, u, 1
+                swap = 0
+                for t in reversed(range(255)):
+                    kt = (s >> t) & 1
+                    swap ^= kt
+                    if swap:
+                        x2, x3 = x3, x2
+                        z2, z3 = z3, z2
+                    swap = kt
+                    A = (x2 + z2) % P
+                    AA = (A * A) % P
+                    B = (x2 - z2) % P
+                    BB = (B * B) % P
+                    E = (AA - BB) % P
+                    C = (x3 + z3) % P
+                    D = (x3 - z3) % P
+                    DA = (D * A) % P
+                    CB = (C * B) % P
+                    x3 = pow(DA + CB, 2, P)
+                    z3 = (x1 * pow(DA - CB, 2, P)) % P
+                    x2 = (AA * BB) % P
+                    z2 = (E * (AA + A24 * E)) % P
+                if swap:
+                    x2, x3 = x3, x2
+                    z2, z3 = z3, z2
+                return (x2 * pow(z2, P - 2, P) % P).to_bytes(32, "little")
+            priv_bytes = bytearray(secrets.token_bytes(32))
+            priv_bytes[0] &= 248
+            priv_bytes[31] &= 127
+            priv_bytes[31] |= 64
+            base_pt = (9).to_bytes(32, "little")
+            pub_bytes = x25519_mult(bytes(priv_bytes), base_pt)
+            return (base64.b64encode(bytes(priv_bytes)).decode(), base64.b64encode(pub_bytes).decode())
+
+    used_ips = set()
+    for u in data.get("users", []):
+        if "awg" in u and isinstance(u["awg"], dict) and "ip" in u["awg"]:
+            ip_str = u["awg"]["ip"].split("/")[0]
+            try:
+                used_ips.add(int(ip_str.split(".")[-1]))
+            except Exception:
+                pass
+    next_ip = 2
+    while next_ip in used_ips and next_ip <= 254:
+        next_ip += 1
+    
+    priv_k, pub_k = gen_curve25519_local()
+    user_awg = {
+        "private_key": priv_k,
+        "public_key": pub_k,
+        "ip": f"10.8.0.{next_ip}/32"
+    }
+    user["awg"] = user_awg
+    try:
+        tmp_u = users_file + ".tmp." + str(os.getpid())
+        with open(tmp_u, "w", encoding="utf-8") as uf:
+            json.dump(data, uf, indent=2, ensure_ascii=False)
+        os.replace(tmp_u, users_file)
+    except Exception:
+        pass
+
 if awg_proto and user_awg and user_awg.get("private_key"):
     awg_port = str(awg_proto.get("port", "48291"))
     awg_pub = awg_proto.get("public_key", "")
@@ -666,6 +752,7 @@ out = {
     "uuid": uuid,
     "vless_uri": vless_uri,
     "hy2_uri": hy2_uri,
+    "tuic_uri": tuic_uri,
     "tg_uri": tg_uri,
     "sub_url": sub_url,
     "awg_conf": awg_conf
@@ -680,9 +767,10 @@ print(json.dumps(out))
         return 1
     fi
 
-    local vless_uri hy2_uri tg_uri user_status user_uuid sub_url awg_conf
+    local vless_uri hy2_uri tuic_uri tg_uri user_status user_uuid sub_url awg_conf
     vless_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['vless_uri'])")
     hy2_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['hy2_uri'])")
+    tuic_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin).get('tuic_uri', ''))")
     tg_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['tg_uri'])")
     sub_url=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin).get('sub_url', ''))")
     user_status=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['status'])")
@@ -719,6 +807,14 @@ print(json.dumps(out))
         echo "--- Hysteria 2 QR Code ---"
         render_qr "$hy2_uri"
         echo ""
+        if [[ -n "$tuic_uri" ]]; then
+            echo "--- TUIC v5 ---"
+            echo "$tuic_uri"
+            echo ""
+            echo "--- TUIC v5 QR Code ---"
+            render_qr "$tuic_uri"
+            echo ""
+        fi
         echo "--- Telegram MTProto ---"
         echo "$tg_uri"
         echo ""
@@ -740,6 +836,11 @@ print(json.dumps(out))
         echo "--- Hysteria 2 ---"
         echo "$hy2_uri"
         echo ""
+        if [[ -n "$tuic_uri" ]]; then
+            echo "--- TUIC v5 ---"
+            echo "$tuic_uri"
+            echo ""
+        fi
         echo "--- Telegram MTProto ---"
         echo "$tg_uri"
         echo ""

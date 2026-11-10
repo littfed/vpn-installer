@@ -77,7 +77,7 @@ services:
       - ./awg:/opt/amnezia/awg
     environment:
       - WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
-    command: ["awg-quick", "up", "/opt/amnezia/awg/awg0.conf"]
+    command: ["sh", "-c", "awg-quick up /opt/amnezia/awg/awg0.conf && trap 'awg-quick down /opt/amnezia/awg/awg0.conf; exit 0' TERM INT; sleep infinity & wait"]
     logging:
       driver: "json-file"
       options:
