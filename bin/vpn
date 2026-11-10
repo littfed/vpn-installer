@@ -77,6 +77,7 @@ cmd_status() {
     # Read manifest info
     local node_uuid=""
     local server_ip=""
+    local server_domain=""
     local reality_port="443"
     local reality_sni=""
     local hy2_port="443"
@@ -84,22 +85,28 @@ cmd_status() {
     if command -v jq >/dev/null 2>&1; then
         node_uuid=$(jq -r '.node_uuid // empty' "$MANIFEST_FILE")
         server_ip=$(jq -r '.server.ipv4 // empty' "$MANIFEST_FILE")
+        server_domain=$(jq -r '.server.domain // empty' "$MANIFEST_FILE")
         reality_port=$(jq -r '.protocols.vless_reality.port // "443"' "$MANIFEST_FILE")
         reality_sni=$(jq -r '.protocols.vless_reality.sni // empty' "$MANIFEST_FILE")
         hy2_port=$(jq -r '.protocols.hysteria2.port // "443"' "$MANIFEST_FILE")
     else
         node_uuid=$(grep -o '"node_uuid": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
         server_ip=$(grep -o '"ipv4": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
+        server_domain=$(grep -o '"domain": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
         reality_sni=$(grep -o '"sni": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
     fi
 
     echo "Node UUID:     ${node_uuid:-unknown}"
     echo "Server IP:     ${server_ip:-unknown}"
+    if [[ -n "$server_domain" ]]; then
+        echo "Decoy Domain:  ${server_domain}"
+    fi
     echo "Decoy SNI:     ${reality_sni:-unknown}"
     echo ""
-    echo "Configured Protocols:"
+    echo "Configured Services:"
     echo "  - VLESS Reality:  ${reality_port}/TCP (XTLS-Vision)"
     echo "  - Hysteria 2:     ${hy2_port}/UDP (Salamander Obfs)"
+    echo "  - Decoy (Caddy):  80/TCP & 127.0.0.1:8443 (HTTP-01 & Reality Fallback)"
     echo ""
 
     echo "--- Service Container Status ---"
@@ -113,6 +120,8 @@ cmd_status() {
     echo "--- Listening Network Ports ---"
     local tcp_listening="no"
     local udp_listening="no"
+    local http_listening="no"
+    local caddy_internal="no"
 
     if command -v ss >/dev/null 2>&1; then
         if ss -tln | grep -E -q ":${reality_port}\b"; then
@@ -121,6 +130,12 @@ cmd_status() {
         if ss -uln | grep -E -q ":${hy2_port}\b"; then
             udp_listening="yes"
         fi
+        if ss -tln | grep -E -q ":80\b"; then
+            http_listening="yes"
+        fi
+        if ss -tln | grep -E -q "127\.0\.0\.1:8443\b"; then
+            caddy_internal="yes"
+        fi
     elif command -v netstat >/dev/null 2>&1; then
         if netstat -tln | grep -E -q ":${reality_port}\b"; then
             tcp_listening="yes"
@@ -128,13 +143,23 @@ cmd_status() {
         if netstat -uln | grep -E -q ":${hy2_port}\b"; then
             udp_listening="yes"
         fi
+        if netstat -tln | grep -E -q ":80\b"; then
+            http_listening="yes"
+        fi
+        if netstat -tln | grep -E -q "127\.0\.0\.1:8443\b"; then
+            caddy_internal="yes"
+        fi
     else
         tcp_listening="active (containerized)"
         udp_listening="active (containerized)"
+        http_listening="active (containerized)"
+        caddy_internal="active (containerized)"
     fi
 
     echo "  Port ${reality_port}/TCP (VLESS Reality): ${tcp_listening}"
     echo "  Port ${hy2_port}/UDP (Hysteria 2):    ${udp_listening}"
+    echo "  Port 80/TCP (Caddy HTTP-01/Decoy):   ${http_listening}"
+    echo "  Port 8443/TCP (Caddy Reality Target): ${caddy_internal}"
     echo "=========================================================="
 }
 
@@ -158,8 +183,10 @@ cmd_service() {
             docker compose -f "$COMPOSE_FILE" restart "$@"
             ;;
         reload)
-            echo "Hot-reloading sing-box configuration..."
-            docker compose -f "$COMPOSE_FILE" kill -s HUP sing-box
+            echo "Hot-reloading service configurations..."
+            docker compose -f "$COMPOSE_FILE" kill -s HUP sing-box 2>/dev/null || true
+            docker compose -f "$COMPOSE_FILE" exec -T caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
+            echo "Reload signal sent successfully."
             ;;
         logs)
             docker compose -f "$COMPOSE_FILE" logs "$@"

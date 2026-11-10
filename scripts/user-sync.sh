@@ -56,6 +56,17 @@ if os.path.exists(users_file):
         sys.exit(f"Error reading {users_file}: {e}")
 
 # Load base config
+server_domain = ""
+if os.path.exists(manifest_file):
+    try:
+        with open(manifest_file, "r", encoding="utf-8") as mf:
+            m_data = json.load(mf)
+            server_domain = m_data.get("server", {}).get("domain", "")
+    except Exception:
+        pass
+if not server_domain:
+    server_domain = os.environ.get("VPN_DOMAIN", "") or os.environ.get("SERVER_DOMAIN", "")
+
 if os.path.exists(config_file):
     with open(config_file, "r", encoding="utf-8") as f:
         config = json.load(f)
@@ -69,8 +80,14 @@ elif os.path.exists(template_file):
             reality = m.get("protocols", {}).get("vless_reality", {})
             hy2 = m.get("protocols", {}).get("hysteria2", {})
             warp = m.get("protocols", {}).get("warp", {})
+            reality_sni = server_domain if server_domain else reality.get("sni", "")
+            reality_handshake = reality.get("handshake", {})
+            handshake_server = "127.0.0.1" if server_domain else reality_handshake.get("server", reality_sni)
+            handshake_port = str(8443 if server_domain else reality_handshake.get("server_port", 443))
             t_text = t_text.replace("__NODE_UUID__", node_uuid)
-            t_text = t_text.replace("__REALITY_SNI__", reality.get("sni", ""))
+            t_text = t_text.replace("__REALITY_SNI__", reality_sni)
+            t_text = t_text.replace("__REALITY_HANDSHAKE_SERVER__", handshake_server)
+            t_text = t_text.replace("__REALITY_HANDSHAKE_PORT__", handshake_port)
             t_text = t_text.replace("__REALITY_PRIVATE_KEY__", reality.get("private_key", ""))
             t_text = t_text.replace("__REALITY_SHORT_ID__", reality.get("short_id", ""))
             t_text = t_text.replace("__HYSTERIA2_PASSWORD__", hy2.get("password", ""))
@@ -90,6 +107,12 @@ else:
 for inbound in config.get("inbounds", []):
     ib_type = inbound.get("type")
     if ib_type == "vless":
+        if server_domain and "tls" in inbound and "reality" in inbound["tls"]:
+            inbound["tls"]["server_name"] = server_domain
+            inbound["tls"]["reality"]["handshake"] = {
+                "server": "127.0.0.1",
+                "server_port": 8443
+            }
         if active_users:
             inbound["users"] = [
                 {

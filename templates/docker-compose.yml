@@ -16,3 +16,21 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  caddy:
+    image: caddy:alpine
+    container_name: caddy-decoy
+    restart: always
+    ports:
+      - "80:80"
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+      - ./caddy/html:/usr/share/caddy:ro
+      - ./caddy/data:/data
+      - ./caddy/config:/config
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

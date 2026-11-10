@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Vanguard Systems delivers enterprise cloud infrastructure, high-availability architecture, systems engineering, and DevOps consulting services.">
+  <meta name="theme-color" content="#0f172a">
+  <title>Vanguard Systems | Enterprise Cloud &amp; Systems Consulting</title>
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-card: #334155;
+      --text-primary: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --border: #475569;
+      --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: var(--font-stack);
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      background-color: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    nav {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 1.25rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .logo {
+      font-weight: 700;
+      font-size: 1.25rem;
+      color: var(--accent);
+      letter-spacing: -0.025em;
+      text-decoration: none;
+    }
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      margin-left: 2rem;
+      font-size: 0.95rem;
+      transition: color 0.2s ease;
+    }
+    .nav-links a:hover {
+      color: var(--accent);
+    }
+    .hero {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 6rem 2rem 4rem;
+      text-align: center;
+    }
+    .hero h1 {
+      font-size: 2.75rem;
+      font-weight: 800;
+      line-height: 1.2;
+      margin-bottom: 1.5rem;
+      background: linear-gradient(135deg, #f8fafc 0%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero p {
+      font-size: 1.25rem;
+      color: var(--text-muted);
+      max-width: 760px;
+      margin: 0 auto 2.5rem;
+    }
+    .btn {
+      display: inline-block;
+      background-color: var(--accent);
+      color: #0f172a;
+      font-weight: 600;
+      padding: 0.85rem 2rem;
+      border-radius: 6px;
+      text-decoration: none;
+      transition: background-color 0.2s ease;
+    }
+    .btn:hover {
+      background-color: var(--accent-hover);
+      color: #ffffff;
+    }
+    .services {
+      background-color: var(--bg-secondary);
+      padding: 5rem 2rem;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .section-title {
+      text-align: center;
+      margin-bottom: 3.5rem;
+    }
+    .section-title h2 {
+      font-size: 2rem;
+      margin-bottom: 0.75rem;
+    }
+    .section-title p {
+      color: var(--text-muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 2rem;
+    }
+    .card {
+      background-color: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 2rem;
+      transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+    .card:hover {
+      transform: translateY(-4px);
+      border-color: var(--accent);
+    }
+    .card h3 {
+      font-size: 1.3rem;
+      margin-bottom: 1rem;
+      color: var(--accent);
+    }
+    .card p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+    .about {
+      padding: 5rem 2rem;
+      text-align: center;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .about h2 {
+      font-size: 2rem;
+      margin-bottom: 1.5rem;
+    }
+    .about p {
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+      font-size: 1.05rem;
+    }
+    footer {
+      background-color: var(--bg-secondary);
+      border-top: 1px solid var(--border);
+      padding: 3rem 2rem;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    @media (max-width: 768px) {
+      .hero h1 { font-size: 2rem; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="/" class="logo">VANGUARD SYSTEMS</a>
+      <div class="nav-links">
+        <a href="#services">Services</a>
+        <a href="#about">About</a>
+        <a href="#contact">Contact</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>Reliable Cloud Architecture &amp; Systems Engineering</h1>
+      <p>We architect, build, and optimize resilient distributed infrastructure for technology companies, fintech platforms, and enterprise systems worldwide.</p>
+      <a href="#contact" class="btn">Schedule a Consultation</a>
+    </section>
+
+    <section id="services" class="services">
+      <div class="container">
+        <div class="section-title">
+          <h2>Our Core Practice Areas</h2>
+          <p>End-to-end technical solutions designed for scalability, zero downtime, and strict security compliance.</p>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <h3>Cloud Infrastructure</h3>
+            <p>Design and deployment of multi-region Kubernetes clusters, automated VPC peering, and terraform-managed infrastructure with 99.99% SLA guarantees.</p>
+          </div>
+          <div class="card">
+            <h3>DevOps &amp; CI/CD Pipelines</h3>
+            <p>Comprehensive build and release pipelines utilizing GitOps methodologies, containerized environments, and automated testing frameworks.</p>
+          </div>
+          <div class="card">
+            <h3>Reliability &amp; Performance</h3>
+            <p>Full observability stacks (Prometheus, Grafana, OpenTelemetry), load testing, latency optimization, and disaster recovery architectures.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="about" class="about">
+      <h2>About Vanguard Systems</h2>
+      <p>Founded by veteran systems architects, Vanguard Systems partners with engineering teams to overcome complex scaling bottlenecks, modernize legacy backend services, and ensure bulletproof system reliability.</p>
+      <p>Our engineers hold top-tier certifications across AWS, Google Cloud, and Kubernetes ecosystems.</p>
+    </section>
+  </main>
+
+  <footer id="contact">
+    <div class="container">
+      <p>&copy; 2026 Vanguard Systems Consulting. All rights reserved.</p>
+      <p style="margin-top: 0.5rem;">Inquiries: <a href="mailto:contact@vanguard-systems.io">contact@vanguard-systems.io</a></p>
+    </div>
+  </footer>
+</body>
+</html>

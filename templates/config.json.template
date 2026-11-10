@@ -43,8 +43,8 @@
         "reality": {
           "enabled": true,
           "handshake": {
-            "server": "__REALITY_SNI__",
-            "server_port": 443
+            "server": "__REALITY_HANDSHAKE_SERVER__",
+            "server_port": __REALITY_HANDSHAKE_PORT__
           },
           "private_key": "__REALITY_PRIVATE_KEY__",
           "short_id": [

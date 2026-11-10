@@ -150,13 +150,16 @@ ensure_dependencies() {
 
 setup_directories() {
     log_info "Setting up directory structure at $VPN_DIR..."
-    mkdir -p "$VPN_DIR"/{bin,config,certs,templates,scripts}
+    mkdir -p "$VPN_DIR"/{bin,config,certs,templates,scripts,caddy/html,caddy/data,caddy/config}
     chmod 700 "$VPN_DIR"
 
     # Copy templates, scripts and CLI
     if [[ "$REPO_ROOT" != "$VPN_DIR" ]]; then
         cp -f "${REPO_ROOT}/templates/docker-compose.yml" "$VPN_DIR/docker-compose.yml"
         cp -f "${REPO_ROOT}/templates/config.json.template" "$VPN_DIR/templates/config.json.template"
+        cp -f "${REPO_ROOT}/templates/Caddyfile" "$VPN_DIR/templates/Caddyfile" 2>/dev/null || true
+        mkdir -p "$VPN_DIR/templates/html"
+        cp -rf "${REPO_ROOT}/templates/html/"* "$VPN_DIR/templates/html/" 2>/dev/null || true
         cp -f "${REPO_ROOT}/scripts/user-sync.sh" "$VPN_DIR/scripts/user-sync.sh"
         if [[ -f "${REPO_ROOT}/scripts/generate-warp-keys.py" ]]; then
             cp -f "${REPO_ROOT}/scripts/generate-warp-keys.py" "$VPN_DIR/scripts/generate-warp-keys.py"
@@ -238,7 +241,30 @@ except Exception:
 
 generate_crypto_keys() {
     local manifest_file="$VPN_DIR/manifest.json"
+    local vpn_domain="${VPN_DOMAIN:-${SERVER_DOMAIN:-}}"
     if [[ -f "$manifest_file" ]]; then
+        if [[ -n "$vpn_domain" ]]; then
+            run_python -c '
+import json, sys
+mf, d = sys.argv[1], sys.argv[2]
+try:
+    with open(mf, "r", encoding="utf-8") as f:
+        m = json.load(f)
+    if "server" not in m:
+        m["server"] = {}
+    m["server"]["domain"] = d
+    if "protocols" in m and "vless_reality" in m["protocols"]:
+        m["protocols"]["vless_reality"]["sni"] = d
+        m["protocols"]["vless_reality"]["handshake"] = {
+            "server": "127.0.0.1",
+            "server_port": 8443
+        }
+    with open(mf, "w", encoding="utf-8") as f:
+        json.dump(m, f, indent=2)
+except Exception:
+    pass
+' "$manifest_file" "$vpn_domain" 2>/dev/null || true
+        fi
         local has_warp=""
         has_warp=$(run_python -c "import json; m=json.load(open('$manifest_file')); print('yes' if m.get('protocols',{}).get('warp') else 'no')" 2>/dev/null || echo "no")
         if [[ "$has_warp" == "yes" ]]; then
@@ -387,6 +413,13 @@ except Exception:
     fi
 
     local sni="${VPN_SNI:-gateway.icloud.com}"
+    local handshake_server="${sni}"
+    local handshake_port=443
+    if [[ -n "$vpn_domain" ]]; then
+        sni="$vpn_domain"
+        handshake_server="127.0.0.1"
+        handshake_port=8443
+    fi
     local created_at
     created_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "2026-11-10T10:00:00Z")
 
@@ -398,13 +431,17 @@ except Exception:
   "server": {
     "ipv4": "${server_ip}",
     "ipv6": "",
-    "domain": ""
+    "domain": "${vpn_domain}"
   },
   "protocols": {
     "vless_reality": {
       "enabled": true,
       "port": 443,
       "sni": "${sni}",
+      "handshake": {
+        "server": "${handshake_server}",
+        "server_port": ${handshake_port}
+      },
       "private_key": "${priv_key}",
       "public_key": "${pub_key}",
       "short_id": "${short_id}",
@@ -465,6 +502,107 @@ setup_tls_certificates() {
     fi
 }
 
+setup_caddy_decoy() {
+    log_info "Configuring Caddy decoy website and Let's Encrypt automation..."
+    mkdir -p "$VPN_DIR/caddy/html" "$VPN_DIR/caddy/data" "$VPN_DIR/caddy/config"
+
+    # Copy decoy static content
+    if [[ -d "${REPO_ROOT}/templates/html" ]]; then
+        cp -rf "${REPO_ROOT}/templates/html/"* "$VPN_DIR/caddy/html/"
+    elif [[ -d "${VPN_DIR}/templates/html" ]]; then
+        cp -rf "${VPN_DIR}/templates/html/"* "$VPN_DIR/caddy/html/"
+    fi
+
+    local vpn_domain="${VPN_DOMAIN:-${SERVER_DOMAIN:-}}"
+    if [[ -z "$vpn_domain" && -f "$VPN_DIR/manifest.json" ]]; then
+        vpn_domain=$(get_json_val "domain" "$VPN_DIR/manifest.json" || true)
+    fi
+
+    local caddyfile_target="$VPN_DIR/caddy/Caddyfile"
+    if [[ -n "$vpn_domain" ]]; then
+        cat << EOF > "$caddyfile_target"
+{
+    admin off
+    http_port 80
+    https_port 8443
+    default_sni localhost
+}
+
+(security_headers) {
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-XSS-Protection "1; mode=block"
+    }
+}
+
+${vpn_domain}:8443 {
+    tls {
+        issuer acme {
+            challenges http
+        }
+    }
+    import security_headers
+    root * /usr/share/caddy
+    file_server
+}
+
+localhost:8443, :8443 {
+    tls internal
+    import security_headers
+    root * /usr/share/caddy
+    file_server
+}
+
+:80 {
+    import security_headers
+    root * /usr/share/caddy
+    file_server
+}
+EOF
+    else
+        if [[ -f "${REPO_ROOT}/templates/Caddyfile" ]]; then
+            cp -f "${REPO_ROOT}/templates/Caddyfile" "$caddyfile_target"
+        elif [[ -f "${VPN_DIR}/templates/Caddyfile" ]]; then
+            cp -f "${VPN_DIR}/templates/Caddyfile" "$caddyfile_target"
+        else
+            cat << EOF > "$caddyfile_target"
+{
+    admin off
+    http_port 80
+    https_port 8443
+    default_sni localhost
+}
+
+(security_headers) {
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-XSS-Protection "1; mode=block"
+    }
+}
+
+localhost:8443, :8443 {
+    tls internal
+    import security_headers
+    root * /usr/share/caddy
+    file_server
+}
+
+:80 {
+    import security_headers
+    root * /usr/share/caddy
+    file_server
+}
+EOF
+        fi
+    fi
+}
+
 render_singbox_config() {
     log_info "Rendering sing-box configuration..."
     local manifest_file="$VPN_DIR/manifest.json"
@@ -480,6 +618,21 @@ render_singbox_config() {
     short_id=$(get_json_val "short_id" "$manifest_file")
     hy2_pwd=$(get_json_val "password" "$manifest_file")
     hy2_obfs=$(get_json_val "obfs_password" "$manifest_file")
+
+    local vpn_domain="${VPN_DOMAIN:-${SERVER_DOMAIN:-}}"
+    if [[ -z "$vpn_domain" && -f "$manifest_file" ]]; then
+        vpn_domain=$(get_json_val "domain" "$manifest_file" || true)
+    fi
+
+    local handshake_server handshake_port
+    if [[ -n "$vpn_domain" ]]; then
+        handshake_server="127.0.0.1"
+        handshake_port=8443
+        reality_sni="$vpn_domain"
+    else
+        handshake_server="${reality_sni}"
+        handshake_port=443
+    fi
 
     warp_priv=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('protocols',{}).get('warp',{}).get('private_key',''))" 2>/dev/null || true)
     warp_peer_pub=$(run_python -c "import json; m=json.load(open('$manifest_file')); print(m.get('protocols',{}).get('warp',{}).get('peer_public_key','bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo='))" 2>/dev/null || true)
@@ -502,6 +655,8 @@ render_singbox_config() {
     sed \
         -e "s|__NODE_UUID__|${node_uuid}|g" \
         -e "s|__REALITY_SNI__|${reality_sni}|g" \
+        -e "s|__REALITY_HANDSHAKE_SERVER__|${handshake_server}|g" \
+        -e "s|__REALITY_HANDSHAKE_PORT__|${handshake_port}|g" \
         -e "s|__REALITY_PRIVATE_KEY__|${priv_key}|g" \
         -e "s|__REALITY_SHORT_ID__|${short_id}|g" \
         -e "s|__HYSTERIA2_PASSWORD__|${hy2_pwd}|g" \
@@ -525,15 +680,15 @@ start_services() {
         return 0
     fi
 
-    log_info "Starting sing-box via Docker Compose..."
+    log_info "Starting services via Docker Compose..."
     cd "$VPN_DIR"
     docker compose up -d --remove-orphans
     docker compose kill -s HUP sing-box 2>/dev/null || docker compose restart sing-box 2>/dev/null || true
 
-    log_info "Verifying open ports (443/TCP & 443/UDP)..."
+    log_info "Verifying open ports (80/TCP, 443/TCP, 443/UDP, 8443/TCP)..."
     sleep 2
     if command -v ss >/dev/null 2>&1; then
-        ss -tulpn | grep 443 || true
+        ss -tulpn | grep -E ':(80|443|8443)\b' || true
     fi
 
     log_info "Installation and startup complete! Current status:"
@@ -548,6 +703,7 @@ main() {
     setup_directories
     generate_crypto_keys
     setup_tls_certificates
+    setup_caddy_decoy
     render_singbox_config
     start_services
 }
