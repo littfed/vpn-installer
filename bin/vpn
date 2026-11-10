@@ -1,9 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 VPN_DIR="${VPN_DIR:-/opt/vpn-installer}"
 MANIFEST_FILE="${VPN_DIR}/manifest.json"
 COMPOSE_FILE="${VPN_DIR}/docker-compose.yml"
+MOCK_SIGHUP_FILE="${MOCK_SIGHUP_FILE:-}"
+
+run_python() {
+    if command -v python3 >/dev/null 2>&1 && python3 -c "import sys" >/dev/null 2>&1; then
+        python3 "$@"
+    elif command -v python >/dev/null 2>&1 && python -c "import sys" >/dev/null 2>&1; then
+        python "$@"
+    else
+        echo "Error: Python runtime not found." >&2
+        return 1
+    fi
+}
+
+render_qr() {
+    local text="$1"
+    if command -v qrencode >/dev/null 2>&1; then
+        qrencode -t ANSIUTF8 "$text" 2>/dev/null || qrencode -t UTF8 "$text" 2>/dev/null || qrencode -t ASCII "$text"
+    elif run_python -c "import qrcode, sys; qr = qrcode.QRCode(); qr.add_data(sys.argv[1]); qr.print_ascii(invert=True)" "$text" 2>/dev/null; then
+        :
+    else
+        echo "[!] Notice: Install 'qrencode' to view terminal QR codes."
+    fi
+}
 
 show_help() {
     cat << 'EOF'
@@ -15,7 +41,13 @@ Usage:
 Available Commands:
   status                   Show node status, services, and listening ports
   service <action>         Manage background services (start, stop, restart, reload, logs)
+  user <action> [args]     Manage users (add, list, show)
   help                     Show this help message
+
+User Actions:
+  vpn user add <name>            Add a new user
+  vpn user list                  List all users
+  vpn user show <name> [--qr]    Show user connection URIs and QR codes
 
 Service Actions:
   vpn service start        Start all containers
@@ -52,7 +84,6 @@ cmd_status() {
         reality_sni=$(jq -r '.protocols.vless_reality.sni // empty' "$MANIFEST_FILE")
         hy2_port=$(jq -r '.protocols.hysteria2.port // "443"' "$MANIFEST_FILE")
     else
-        # Fallback parsing
         node_uuid=$(grep -o '"node_uuid": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
         server_ip=$(grep -o '"ipv4": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
         reality_sni=$(grep -o '"sni": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)
@@ -94,7 +125,6 @@ cmd_status() {
             udp_listening="yes"
         fi
     else
-        # Mock/fallback check if container running
         tcp_listening="active (containerized)"
         udp_listening="active (containerized)"
     fi
@@ -141,6 +171,294 @@ cmd_service() {
     esac
 }
 
+cmd_user_add() {
+    local username="${1:-}"
+    if [[ -z "$username" ]]; then
+        echo "Error: Username is required." >&2
+        echo "Usage: vpn user add <name>" >&2
+        return 1
+    fi
+
+    if [[ ! "$username" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "Error: Invalid username '$username'. Use only alphanumeric characters, dashes, and underscores." >&2
+        return 1
+    fi
+
+    mkdir -p "$VPN_DIR"
+    local users_file="${VPN_DIR}/users.json"
+
+    # Add user to users.json via python
+    set +e
+    local py_res
+    py_res=$(run_python -c '
+import json, sys, os, uuid, secrets, base64
+from datetime import datetime, timezone
+
+users_file = sys.argv[1]
+username = sys.argv[2]
+
+data = {"users": []}
+if os.path.exists(users_file):
+    try:
+        with open(users_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        sys.exit(f"Error reading users.json: {e}")
+
+users = data.get("users", [])
+for u in users:
+    if u.get("name") == username:
+        sys.exit(f"Error: User \"{username}\" already exists.")
+
+new_user = {
+    "name": username,
+    "uuid": str(uuid.uuid4()).lower(),
+    "password": secrets.token_urlsafe(18),
+    "sub_key": base64.b64encode(secrets.token_bytes(32)).decode(),
+    "tg_secret": secrets.token_hex(16),
+    "sub_token": secrets.token_hex(16),
+    "status": "active",
+    "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+}
+
+users.append(new_user)
+data["users"] = users
+
+tmp_users = users_file + ".tmp." + str(os.getpid())
+with open(tmp_users, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+os.replace(tmp_users, users_file)
+print(new_user["uuid"])
+' "$users_file" "$username" 2>&1)
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        echo "$py_res" >&2
+        return 1
+    fi
+
+    local user_uuid="$py_res"
+
+    # Run user sync
+    local sync_script=""
+    if [[ -f "${VPN_DIR}/scripts/user-sync.sh" ]]; then
+        sync_script="${VPN_DIR}/scripts/user-sync.sh"
+    elif [[ -f "${SCRIPT_DIR}/../scripts/user-sync.sh" ]]; then
+        sync_script="${SCRIPT_DIR}/../scripts/user-sync.sh"
+    elif [[ -f "${SCRIPT_DIR}/user-sync.sh" ]]; then
+        sync_script="${SCRIPT_DIR}/user-sync.sh"
+    fi
+
+    if [[ -n "$sync_script" ]]; then
+        VPN_DIR="$VPN_DIR" MOCK_SIGHUP_FILE="$MOCK_SIGHUP_FILE" bash "$sync_script"
+    fi
+
+    echo "User '$username' added successfully (UUID: $user_uuid)."
+}
+
+cmd_user_list() {
+    local users_file="${VPN_DIR}/users.json"
+    if [[ ! -f "$users_file" ]]; then
+        echo "No users found."
+        return 0
+    fi
+
+    run_python -c '
+import json, sys, os
+
+users_file = sys.argv[1]
+if not os.path.exists(users_file):
+    print("No users found.")
+    sys.exit(0)
+
+try:
+    with open(users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    print("No users found.")
+    sys.exit(0)
+
+users = data.get("users", [])
+if not users:
+    print("No users found.")
+    sys.exit(0)
+
+print(f"NAME                 STATUS     CREATED AT             UUID")
+print("-" * 86)
+for u in users:
+    n = u.get("name", "")
+    s = u.get("status", "")
+    c = u.get("created_at", "")
+    uid = u.get("uuid", "")
+    print(f"{n:<20} {s:<10} {c:<22} {uid}")
+' "$users_file"
+}
+
+cmd_user_show() {
+    local username=""
+    local qr_mode=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --qr|-q)
+                qr_mode=1
+                shift
+                ;;
+            *)
+                if [[ -z "$username" ]]; then
+                    username="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$username" ]]; then
+        echo "Error: Username is required." >&2
+        echo "Usage: vpn user show <name> [--qr]" >&2
+        return 1
+    fi
+
+    local users_file="${VPN_DIR}/users.json"
+    if [[ ! -f "$users_file" ]]; then
+        echo "Error: User '$username' not found." >&2
+        return 1
+    fi
+
+    set +e
+    local py_output
+    py_output=$(run_python -c '
+import json, sys, os
+
+users_file = sys.argv[1]
+manifest_file = sys.argv[2]
+username = sys.argv[3]
+
+if not os.path.exists(users_file):
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+try:
+    with open(users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as e:
+    sys.exit(f"Error reading users.json: {e}")
+
+user = next((u for u in data.get("users", []) if u.get("name") == username), None)
+if not user:
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+server_ip = os.environ.get("SERVER_IP", "")
+reality_port = "443"
+reality_sni = "gateway.icloud.com"
+reality_pbk = ""
+reality_sid = ""
+hy2_port = "443"
+hy2_obfs = ""
+
+if os.path.exists(manifest_file):
+    try:
+        with open(manifest_file, "r", encoding="utf-8") as mf:
+            m = json.load(mf)
+            if not server_ip:
+                server_ip = m.get("server", {}).get("ipv4") or m.get("server", {}).get("domain") or "127.0.0.1"
+            vless = m.get("protocols", {}).get("vless_reality", {})
+            reality_port = str(vless.get("port", "443"))
+            reality_sni = vless.get("sni", "gateway.icloud.com")
+            reality_pbk = vless.get("public_key", "")
+            reality_sid = vless.get("short_id", "")
+
+            hy2 = m.get("protocols", {}).get("hysteria2", {})
+            hy2_port = str(hy2.get("port", "443"))
+            hy2_obfs = hy2.get("obfs_password", "")
+    except Exception:
+        pass
+
+if not server_ip:
+    server_ip = "127.0.0.1"
+
+uuid = user.get("uuid", "")
+password = user.get("password", "")
+
+vless_uri = f"vless://{uuid}@{server_ip}:{reality_port}?security=reality&flow=xtls-rprx-vision&pbk={reality_pbk}&sni={reality_sni}&sid={reality_sid}&fp=chrome#{username}-Reality"
+hy2_uri = f"hysteria2://{password}@{server_ip}:{hy2_port}/?sni={reality_sni}&obfs=salamander&obfs-password={hy2_obfs}&insecure=1#{username}-Hy2"
+
+out = {
+    "name": username,
+    "status": user.get("status", "active"),
+    "uuid": uuid,
+    "vless_uri": vless_uri,
+    "hy2_uri": hy2_uri
+}
+print(json.dumps(out))
+' "$users_file" "$MANIFEST_FILE" "$username" 2>&1)
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        echo "$py_output" >&2
+        return 1
+    fi
+
+    local vless_uri hy2_uri user_status user_uuid
+    vless_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['vless_uri'])")
+    hy2_uri=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['hy2_uri'])")
+    user_status=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['status'])")
+    user_uuid=$(echo "$py_output" | run_python -c "import json, sys; print(json.load(sys.stdin)['uuid'])")
+
+    echo "=========================================================="
+    echo "User:   $username ($user_status)"
+    echo "UUID:   $user_uuid"
+    echo "=========================================================="
+    echo ""
+
+    if [[ "$qr_mode" -eq 1 ]]; then
+        echo "--- VLESS Reality ---"
+        echo "$vless_uri"
+        echo ""
+        echo "--- VLESS Reality QR Code ---"
+        render_qr "$vless_uri"
+        echo ""
+        echo "--- Hysteria 2 ---"
+        echo "$hy2_uri"
+        echo ""
+        echo "--- Hysteria 2 QR Code ---"
+        render_qr "$hy2_uri"
+        echo ""
+    else
+        echo "--- VLESS Reality ---"
+        echo "$vless_uri"
+        echo ""
+        echo "--- Hysteria 2 ---"
+        echo "$hy2_uri"
+        echo ""
+        echo "(Tip: Run 'vpn user show $username --qr' to display terminal QR codes)"
+    fi
+    echo "=========================================================="
+}
+
+cmd_user() {
+    local action="${1:-}"
+    shift || true
+
+    case "$action" in
+        add)
+            cmd_user_add "$@"
+            ;;
+        list)
+            cmd_user_list "$@"
+            ;;
+        show)
+            cmd_user_show "$@"
+            ;;
+        *)
+            echo "Unknown user action: $action" >&2
+            echo "Usage: vpn user [add|list|show]" >&2
+            return 1
+            ;;
+    esac
+}
+
 main() {
     if [[ $# -eq 0 ]]; then
         show_help
@@ -156,6 +474,9 @@ main() {
             ;;
         service)
             cmd_service "$@"
+            ;;
+        user)
+            cmd_user "$@"
             ;;
         help|--help|-h)
             show_help

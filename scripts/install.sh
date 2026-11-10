@@ -115,10 +115,24 @@ ensure_dependencies() {
         log_info "Installing Docker and Docker Compose plugin..."
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y
-            apt-get install -y ca-certificates curl gnupg
+            apt-get install -y ca-certificates curl gnupg qrencode jq
             curl -fsSL https://get.docker.com | sh
         else
             curl -fsSL https://get.docker.com | sh
+        fi
+    else
+        if command -v apt-get >/dev/null 2>&1; then
+            local missing_pkgs=""
+            for pkg in qrencode jq; do
+                if ! command -v "$pkg" >/dev/null 2>&1; then
+                    missing_pkgs="${missing_pkgs} ${pkg}"
+                fi
+            done
+            if [[ -n "$missing_pkgs" ]]; then
+                log_info "Installing required packages:${missing_pkgs}..."
+                apt-get update -y >/dev/null 2>&1 || true
+                apt-get install -y $missing_pkgs >/dev/null 2>&1 || true
+            fi
         fi
     fi
 
@@ -136,13 +150,15 @@ ensure_dependencies() {
 
 setup_directories() {
     log_info "Setting up directory structure at $VPN_DIR..."
-    mkdir -p "$VPN_DIR"/{bin,config,certs,templates}
+    mkdir -p "$VPN_DIR"/{bin,config,certs,templates,scripts}
     chmod 700 "$VPN_DIR"
 
-    # Copy templates and CLI
+    # Copy templates, scripts and CLI
     cp -f "${REPO_ROOT}/templates/docker-compose.yml" "$VPN_DIR/docker-compose.yml"
     cp -f "${REPO_ROOT}/templates/config.json.template" "$VPN_DIR/templates/config.json.template"
     cp -f "${REPO_ROOT}/templates/docker-compose.yml" "$VPN_DIR/templates/docker-compose.yml"
+    cp -f "${REPO_ROOT}/scripts/user-sync.sh" "$VPN_DIR/scripts/user-sync.sh"
+    chmod 755 "$VPN_DIR/scripts/user-sync.sh"
     cp -f "${REPO_ROOT}/bin/vpn" "$VPN_DIR/bin/vpn"
     chmod 755 "$VPN_DIR/bin/vpn"
 
