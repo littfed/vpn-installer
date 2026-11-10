@@ -115,6 +115,40 @@ for inbound in config.get("inbounds", []):
                     "password": "disabled"
                 }
             ]
+    elif ib_type == "shadowsocks":
+        if active_users:
+            inbound["users"] = [
+                {
+                    "name": u["name"],
+                    "password": u.get("sub_key", "")
+                }
+                for u in active_users
+            ]
+        else:
+            inbound["users"] = [
+                {
+                    "name": "default-admin",
+                    "password": "disabled"
+                }
+            ]
+    elif ib_type == "tuic":
+        if active_users:
+            inbound["users"] = [
+                {
+                    "name": u["name"],
+                    "uuid": u["uuid"],
+                    "password": u["password"]
+                }
+                for u in active_users
+            ]
+        else:
+            inbound["users"] = [
+                {
+                    "name": "default-admin",
+                    "uuid": "00000000-0000-0000-0000-000000000000",
+                    "password": "disabled"
+                }
+            ]
 
 with open(output_file, "w", encoding="utf-8") as f:
     json.dump(config, f, indent=2, ensure_ascii=False)

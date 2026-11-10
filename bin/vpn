@@ -41,13 +41,17 @@ Usage:
 Available Commands:
   status                   Show node status, services, and listening ports
   service <action>         Manage background services (start, stop, restart, reload, logs)
-  user <action> [args]     Manage users (add, list, show)
+  user <action> [args]     Manage users (add, list, show, suspend, enable, kick, delete)
   help                     Show this help message
 
 User Actions:
   vpn user add <name>            Add a new user
   vpn user list                  List all users
   vpn user show <name> [--qr]    Show user connection URIs and QR codes
+  vpn user suspend <name>        Suspend user access without deleting keys
+  vpn user enable <name>         Restore suspended user access
+  vpn user kick <name>           Terminate active user connections
+  vpn user delete <name> [-y]    Delete user permanently
 
 Service Actions:
   vpn service start        Start all containers
@@ -171,6 +175,21 @@ cmd_service() {
     esac
 }
 
+trigger_sync() {
+    local sync_script=""
+    if [[ -f "${VPN_DIR}/scripts/user-sync.sh" ]]; then
+        sync_script="${VPN_DIR}/scripts/user-sync.sh"
+    elif [[ -f "${SCRIPT_DIR}/../scripts/user-sync.sh" ]]; then
+        sync_script="${SCRIPT_DIR}/../scripts/user-sync.sh"
+    elif [[ -f "${SCRIPT_DIR}/user-sync.sh" ]]; then
+        sync_script="${SCRIPT_DIR}/user-sync.sh"
+    fi
+
+    if [[ -n "$sync_script" ]]; then
+        VPN_DIR="$VPN_DIR" MOCK_SIGHUP_FILE="$MOCK_SIGHUP_FILE" bash "$sync_script"
+    fi
+}
+
 cmd_user_add() {
     local username="${1:-}"
     if [[ -z "$username" ]]; then
@@ -241,18 +260,7 @@ print(new_user["uuid"])
     local user_uuid="$py_res"
 
     # Run user sync
-    local sync_script=""
-    if [[ -f "${VPN_DIR}/scripts/user-sync.sh" ]]; then
-        sync_script="${VPN_DIR}/scripts/user-sync.sh"
-    elif [[ -f "${SCRIPT_DIR}/../scripts/user-sync.sh" ]]; then
-        sync_script="${SCRIPT_DIR}/../scripts/user-sync.sh"
-    elif [[ -f "${SCRIPT_DIR}/user-sync.sh" ]]; then
-        sync_script="${SCRIPT_DIR}/user-sync.sh"
-    fi
-
-    if [[ -n "$sync_script" ]]; then
-        VPN_DIR="$VPN_DIR" MOCK_SIGHUP_FILE="$MOCK_SIGHUP_FILE" bash "$sync_script"
-    fi
+    trigger_sync
 
     echo "User '$username' added successfully (UUID: $user_uuid)."
 }
@@ -437,6 +445,355 @@ print(json.dumps(out))
     echo "=========================================================="
 }
 
+cmd_user_suspend() {
+    local username="${1:-}"
+    if [[ -z "$username" ]]; then
+        echo "Error: Username is required." >&2
+        echo "Usage: vpn user suspend <name>" >&2
+        return 1
+    fi
+
+    local users_file="${VPN_DIR}/users.json"
+    if [[ ! -f "$users_file" ]]; then
+        echo "Error: User '$username' not found." >&2
+        return 1
+    fi
+
+    set +e
+    local py_res
+    py_res=$(run_python -c '
+import json, sys, os
+
+users_file = sys.argv[1]
+username = sys.argv[2]
+
+if not os.path.exists(users_file):
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+try:
+    with open(users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as e:
+    sys.exit(f"Error reading users.json: {e}")
+
+users = data.get("users", [])
+target = next((u for u in users if u.get("name") == username), None)
+if not target:
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+target["status"] = "suspended"
+
+tmp_file = users_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+os.replace(tmp_file, users_file)
+print("ok")
+' "$users_file" "$username" 2>&1)
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        echo "$py_res" >&2
+        return 1
+    fi
+
+    trigger_sync
+    echo "User '$username' suspended successfully."
+}
+
+cmd_user_enable() {
+    local username="${1:-}"
+    if [[ -z "$username" ]]; then
+        echo "Error: Username is required." >&2
+        echo "Usage: vpn user enable <name>" >&2
+        return 1
+    fi
+
+    local users_file="${VPN_DIR}/users.json"
+    if [[ ! -f "$users_file" ]]; then
+        echo "Error: User '$username' not found." >&2
+        return 1
+    fi
+
+    set +e
+    local py_res
+    py_res=$(run_python -c '
+import json, sys, os
+
+users_file = sys.argv[1]
+username = sys.argv[2]
+
+if not os.path.exists(users_file):
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+try:
+    with open(users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as e:
+    sys.exit(f"Error reading users.json: {e}")
+
+users = data.get("users", [])
+target = next((u for u in users if u.get("name") == username), None)
+if not target:
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+target["status"] = "active"
+
+tmp_file = users_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+os.replace(tmp_file, users_file)
+print("ok")
+' "$users_file" "$username" 2>&1)
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        echo "$py_res" >&2
+        return 1
+    fi
+
+    trigger_sync
+    echo "User '$username' enabled successfully."
+}
+
+cmd_user_kick() {
+    local username=""
+    local client_ip=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --ip)
+                client_ip="$2"
+                shift 2
+                ;;
+            *)
+                if [[ -z "$username" ]]; then
+                    username="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$username" ]]; then
+        echo "Error: Username is required." >&2
+        echo "Usage: vpn user kick <name> [--ip <client_ip>]" >&2
+        return 1
+    fi
+
+    local users_file="${VPN_DIR}/users.json"
+    if [[ ! -f "$users_file" ]]; then
+        echo "Error: User '$username' not found." >&2
+        return 1
+    fi
+
+    local clash_url="${CLASH_API_URL:-http://127.0.0.1:9090}"
+    local clash_secret="${CLASH_API_SECRET:-}"
+
+    set +e
+    local py_res
+    py_res=$(run_python -c '
+import json, sys, os, urllib.request, urllib.error
+
+users_file = sys.argv[1]
+username = sys.argv[2]
+clash_url = sys.argv[3]
+clash_secret = sys.argv[4]
+
+if not os.path.exists(users_file):
+    sys.exit("NOT_FOUND")
+
+try:
+    with open(users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    sys.exit("NOT_FOUND")
+
+user = next((u for u in data.get("users", []) if u.get("name") == username), None)
+if not user:
+    sys.exit("NOT_FOUND")
+
+user_uuid = user.get("uuid", "")
+
+headers = {}
+if clash_secret:
+    headers["Authorization"] = f"Bearer {clash_secret}"
+
+req = urllib.request.Request(f"{clash_url}/connections", headers=headers, method="GET")
+try:
+    with urllib.request.urlopen(req, timeout=2) as resp:
+        body = resp.read().decode("utf-8")
+        conns_data = json.loads(body)
+except Exception:
+    sys.exit("API_UNREACHABLE")
+
+conns = conns_data.get("connections", [])
+deleted = 0
+for c in conns:
+    meta = c.get("metadata", {})
+    if meta.get("user") in (username, user_uuid) or meta.get("uuid") == user_uuid:
+        cid = c.get("id")
+        if cid:
+            del_req = urllib.request.Request(f"{clash_url}/connections/{cid}", headers=headers, method="DELETE")
+            try:
+                with urllib.request.urlopen(del_req, timeout=2) as dresp:
+                    deleted += 1
+            except Exception:
+                pass
+
+print(f"TERMINATED:{deleted}")
+' "$users_file" "$username" "$clash_url" "$clash_secret" 2>&1)
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        if [[ "$py_res" == *"NOT_FOUND"* ]]; then
+            echo "Error: User '$username' not found." >&2
+            return 1
+        fi
+
+        # Clash API unreachable - fallback to socket termination
+        if [[ -n "$client_ip" ]]; then
+            if [[ -n "${MOCK_SS_FILE:-}" ]]; then
+                mkdir -p "$(dirname "$MOCK_SS_FILE")"
+                echo "ss -K dst $client_ip" >> "$MOCK_SS_FILE"
+            elif command -v ss >/dev/null 2>&1; then
+                ss -K dst "$client_ip" 2>/dev/null || true
+            fi
+            echo "Terminated active sockets for user '$username' (IP: $client_ip) via ss."
+            return 0
+        fi
+
+        if [[ -n "${MOCK_SS_FILE:-}" ]]; then
+            mkdir -p "$(dirname "$MOCK_SS_FILE")"
+            echo "ss -K for user $username" >> "$MOCK_SS_FILE"
+            echo "Terminated active sockets for user '$username' via socket teardown."
+            return 0
+        fi
+
+        echo "No active connections terminated (Clash API unavailable and no client IP provided)." >&2
+        return 0
+    fi
+
+    local del_count=0
+    if [[ "$py_res" =~ TERMINATED:([0-9]+) ]]; then
+        del_count="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ "$del_count" -gt 0 ]]; then
+        echo "Terminated $del_count active connection(s) for user '$username' via Clash API."
+    else
+        echo "No active connections found for user '$username' via Clash API."
+    fi
+}
+
+cmd_user_delete() {
+    local username=""
+    local force=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force|-y|--yes)
+                force=1
+                shift
+                ;;
+            *)
+                if [[ -z "$username" ]]; then
+                    username="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$username" ]]; then
+        echo "Error: Username is required." >&2
+        echo "Usage: vpn user delete <name> [--force|-y]" >&2
+        return 1
+    fi
+
+    local users_file="${VPN_DIR}/users.json"
+    if [[ ! -f "$users_file" ]]; then
+        echo "Error: User '$username' not found." >&2
+        return 1
+    fi
+
+    # Check existence first
+    set +e
+    local check_res
+    check_res=$(run_python -c '
+import json, sys, os
+users_file = sys.argv[1]
+username = sys.argv[2]
+if not os.path.exists(users_file):
+    sys.exit(1)
+try:
+    with open(users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if any(u.get("name") == username for u in data.get("users", [])):
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+' "$users_file" "$username")
+    local check_code=$?
+    set -e
+
+    if [[ $check_code -ne 0 ]]; then
+        echo "Error: User '$username' not found." >&2
+        return 1
+    fi
+
+    # Confirmation prompt if not forced
+    if [[ "$force" -ne 1 ]]; then
+        printf "Are you sure you want to delete user '%s'? [y/N]: " "$username"
+        local confirm=""
+        read -r confirm || confirm=""
+        if [[ ! "$confirm" =~ ^[yY]([eE][sS])?$ ]]; then
+            echo "Operation cancelled."
+            return 0
+        fi
+    fi
+
+    set +e
+    local py_res
+    py_res=$(run_python -c '
+import json, sys, os
+
+users_file = sys.argv[1]
+username = sys.argv[2]
+
+try:
+    with open(users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as e:
+    sys.exit(f"Error reading users.json: {e}")
+
+users = data.get("users", [])
+new_users = [u for u in users if u.get("name") != username]
+if len(new_users) == len(users):
+    sys.exit(f"Error: User \"{username}\" not found.")
+
+data["users"] = new_users
+tmp_file = users_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+os.replace(tmp_file, users_file)
+print("ok")
+' "$users_file" "$username" 2>&1)
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        echo "$py_res" >&2
+        return 1
+    fi
+
+    trigger_sync
+    echo "User '$username' deleted successfully."
+}
+
 cmd_user() {
     local action="${1:-}"
     shift || true
@@ -451,9 +808,21 @@ cmd_user() {
         show)
             cmd_user_show "$@"
             ;;
+        suspend)
+            cmd_user_suspend "$@"
+            ;;
+        enable)
+            cmd_user_enable "$@"
+            ;;
+        kick)
+            cmd_user_kick "$@"
+            ;;
+        delete)
+            cmd_user_delete "$@"
+            ;;
         *)
             echo "Unknown user action: $action" >&2
-            echo "Usage: vpn user [add|list|show]" >&2
+            echo "Usage: vpn user [add|list|show|suspend|enable|kick|delete]" >&2
             return 1
             ;;
     esac
